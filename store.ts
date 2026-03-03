@@ -43,9 +43,9 @@ const INITIAL_TOWN_NPCS: TownNPCData[] = [
         dialogue: ["The scrolls whisper of the First Nut."]
     },
     {
-        id: 'npc_nurse', name: 'Nurse Joya', role: 'Nurse', position: [25, 1, 22], hp: 100, maxHp: 100,
-        routine: { homePos: [25, 1, 25], workPos: [25, 1, 22] }, // Always at Clinic b8
-        dialogue: ["You look hurt! Let me heal you with love <3"]
+        id: 'npc_nurse', name: 'Nurse Pikachu', role: 'Nurse', position: [25, 1, 24], hp: 100, maxHp: 100,
+        routine: { homePos: [25, 1, 24], workPos: [25, 1, 24] }, // Stationed inside Clinic b8
+        dialogue: ["All healed up! Your health and mana are full. Come back anytime~ <3"]
     }
 ];
 

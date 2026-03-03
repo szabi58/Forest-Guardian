@@ -75,10 +75,8 @@ const LookController: React.FC = () => {
                 return;
             }
             isPointerDown.current = false;
-            const duration = Date.now() - startTime.current;
-            if (!hasMovedSignificantly.current && duration < 250) {
-                setActiveDialoguePartner(null);
-            }
+            // Short taps are used to interact with NPCs; don't auto-close dialogue here.
+            // Dialogue will close when you walk away or another NPC starts talking.
             setCameraDelta(new THREE.Vector2(0, 0));
         };
 
@@ -98,7 +96,6 @@ const LookController: React.FC = () => {
 export const Game: React.FC = () => {
   const [playerObj, setPlayerObj] = useState<THREE.Object3D | null>(null);
   const playerRef = useRef<THREE.Object3D>(null);
-  const isHitStopping = useGameStore(s => s.isHitStopping);
   const isPaused = useGameStore(s => s.isPaused);
   const gameTime = useGameStore(s => s.gameTime);
   
@@ -141,7 +138,7 @@ export const Game: React.FC = () => {
             <Sky sunPosition={sunPos} turbidity={0.05} rayleigh={gameTime > 0.7 ? 0.05 : 0.5} />
             <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
             <Suspense fallback={null}>
-                <Physics gravity={[0, -22, 0]} paused={isHitStopping || isPaused}>
+                <Physics gravity={[0, -22, 0]} paused={isPaused}>
                     <Environment />
                     <TownSystem playerRef={playerRef} />
                     <Atmosphere />

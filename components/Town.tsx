@@ -9,6 +9,68 @@ import { useGameStore } from '../store';
 import { BuildingData, TownNPCData, TownAnimalData } from '../types';
 import { getTerrainHeight } from './Environment';
 
+// --- NPC DIALOGUE FLAVOR ---
+
+const MAYOR_LINES = [
+    "This town looks peaceful, but sometimes I feel the peace is just painted on.",
+    "I give speeches about hope, yet I can't shake the feeling we're all on rails.",
+    "I sign decrees and draw borders, but I suspect the real borders are set in code.",
+    "If I'm the mayor, why do I only exist when you look at me?",
+    "Elections here are easy; no one ever runs against me, or maybe no one was programmed to.",
+    "Some days I practice my smile in case the player zooms in.",
+    "I move tokens on a map and call it policy, but the real power lives in some distant editor."
+];
+
+const MERCHANT_LINES = [
+    "Acorns, gems, gold... yet I still feel like I'm trading in someone else's dream.",
+    "My prices never change, my stock never runs out. Does that sound like a real economy to you?",
+    "Every day I shout the same offer. Sometimes I wonder if the script forgot to give me a day off.",
+    "I polish these wares, but I think the real treasure is whoever can edit this reality.",
+    "I’ve never seen a delivery cart, yet my shelves refill when you’re not looking.",
+    "No one haggles, no one steals. Either I'm the best merchant alive, or this world is heavily moderated.",
+    "I keep a ledger of sales that only moves when you interact. The rest of the time it just waits, like me."
+];
+
+const BLACKSMITH_LINES = [
+    "I hammer steel all day, but the clang sounds like a looping sound effect.",
+    "The forge burns forever, yet the coal pile never shrinks. Feels... scripted.",
+    "Weapons come out sharp, monsters fall down, then the world quietly resets.",
+    "Sometimes I swing my own hammer just to see if the physics engine notices.",
+    "The anvil never dents, the walls never stain. Either I'm a genius or reality is being cleaned each frame.",
+    "I could craft a blade sharp enough to cut through code, if only I could reach the source.",
+    "I dream of sparks that fly beyond the screen and land somewhere real."
+];
+
+const HISTORIAN_LINES = [
+    "The scrolls speak of ages, yet the world never really changes, does it?",
+    "I record history in a town that never ages and never truly sleeps.",
+    "I tried to write about the time before you arrived, but the pages stayed blank.",
+    "Every legend here feels like patch notes rewritten as myth.",
+    "I catalog days that feel suspiciously like the last build.",
+    "Our chronicles end whenever you close the game. That’s not how history is supposed to work.",
+    "The margins of my books are full of questions about whoever keeps rewriting our fate."
+];
+
+const NURSE_LINES = [
+    "Your pulse is strong again, but I wonder who wrote the code that keeps it beating.",
+    "I fix broken bones with a sparkle and a sound effect. Real medicine is never that simple.",
+    "You fall, you bleed, you stand up again. I suspect some invisible counter just resets.",
+    "If healing is free and endless, maybe we're not meant to reach a real ending.",
+    "I’ve never lost a patient, but only because failure isn’t in my design.",
+    "Sometimes I wish I could heal myself of the feeling that none of this is real.",
+    "I hear your heartbeat, but what I really see are health bars ticking back to full."
+];
+
+const EXISTENTIAL_LINES = [
+    "Sometimes I swear I can feel a camera orbiting above us.",
+    "Do you ever wonder if we're just numbers in someone's GPU memory?",
+    "When you walk away, I freeze. When you return, I wake. That can't be normal life.",
+    "If this is a story, I hope you’re the kind of hero who asks why the story exists.",
+    "I tried walking past the trees at the edge once. The world simply... stopped.",
+    "On quiet nights, I hear the menu music even when nobody is here.",
+    "I have a feeling that if you uninstall this place, I will simply vanish mid‑sentence."
+];
+
 // --- BUILDING DECORATIONS ---
 
 const FlowerBox: React.FC<{ position: [number, number, number]; rotation?: [number, number, number] }> = ({ position, rotation = [0, 0, 0] }) => {
@@ -207,15 +269,53 @@ const BuildingWalls: React.FC<{ width: number, height: number, depth: number }> 
 };
 
 const LibraryStructure: React.FC<{ width: number, height: number, depth: number }> = ({ width, height, depth }) => {
+    const wallColor = "#8d8d8d";
+    const halfW = width / 2;
+    const halfD = depth / 2;
     return (
         <group position={[0, height / 2, 0]}>
-            {/* Main Hall */}
-            <mesh position={[0, 0, 0]} castShadow receiveShadow>
-                <boxGeometry args={[width, height, depth]} />
-                <meshStandardMaterial color="#8d8d8d" roughness={0.6} /> 
+            {/* Main hall: back, sides, floor and ceiling, but open front so the door is visible */}
+            <mesh position={[0, 0, -halfD]} castShadow receiveShadow>
+                <boxGeometry args={[width, height, 0.5]} />
+                <meshStandardMaterial color={wallColor} roughness={0.6} /> 
             </mesh>
-            {/* Pillars */}
-            <group position={[0, 0, depth/2 + 1]}>
+            <mesh position={[-halfW, 0, 0]} castShadow receiveShadow>
+                <boxGeometry args={[0.5, height, depth]} />
+                <meshStandardMaterial color={wallColor} roughness={0.6} /> 
+            </mesh>
+            <mesh position={[halfW, 0, 0]} castShadow receiveShadow>
+                <boxGeometry args={[0.5, height, depth]} />
+                <meshStandardMaterial color={wallColor} roughness={0.6} /> 
+            </mesh>
+            <mesh position={[0, -height / 2, 0]} castShadow receiveShadow>
+                <boxGeometry args={[width, 0.5, depth]} />
+                <meshStandardMaterial color={wallColor} roughness={0.6} /> 
+            </mesh>
+            <mesh position={[0, height / 2, 0]} castShadow receiveShadow>
+                <boxGeometry args={[width, 0.5, depth]} />
+                <meshStandardMaterial color={wallColor} roughness={0.6} /> 
+            </mesh>
+
+            {/* Front wall with central opening for the door: two side panels + header above */}
+            <group position={[-4.0, 0, halfD]}>
+                <mesh castShadow receiveShadow>
+                    <boxGeometry args={[2.0, height, 0.5]} />
+                    <meshStandardMaterial color={wallColor} roughness={0.6} /> 
+                </mesh>
+            </group>
+            <group position={[4.0, 0, halfD]}>
+                <mesh castShadow receiveShadow>
+                    <boxGeometry args={[2.0, height, 0.5]} />
+                    <meshStandardMaterial color={wallColor} roughness={0.6} /> 
+                </mesh>
+            </group>
+            <mesh position={[0, height / 2 - 0.2, halfD + 0.05]} castShadow receiveShadow>
+                <boxGeometry args={[width, 0.4, 0.5]} />
+                <meshStandardMaterial color={wallColor} roughness={0.6} /> 
+            </mesh>
+
+            {/* Pillars in front of the entrance */}
+            <group position={[0, 0, halfD + 1]}>
                 {[-3, 3].map((x) => (
                     <mesh key={x} position={[x, -height/2 + 2, 0]} castShadow>
                         <cylinderGeometry args={[0.8, 0.8, 4, 16]} />
@@ -228,7 +328,8 @@ const LibraryStructure: React.FC<{ width: number, height: number, depth: number 
                      <meshStandardMaterial color="#555" roughness={0.8} />
                 </mesh>
             </group>
-            {/* Side Scrolls Visuals */}
+
+            {/* Side scrolls visuals */}
             <group position={[width/2 + 0.5, -height/4, 0]}>
                  <mesh rotation={[0, 0, Math.PI/2]}>
                      <cylinderGeometry args={[0.4, 0.4, 1.5, 8]} />
@@ -240,14 +341,50 @@ const LibraryStructure: React.FC<{ width: number, height: number, depth: number 
 };
 
 const ClinicStructure: React.FC<{ width: number, height: number, depth: number }> = ({ width, height, depth }) => {
+    const wallColor = "#e3f2fd";
+    const halfW = width / 2;
+    const halfD = depth / 2;
     return (
         <group position={[0, height / 2, 0]}>
-            {/* Main White Building */}
-            <mesh position={[0, 0, 0]} castShadow receiveShadow>
-                <boxGeometry args={[width, height, depth]} />
-                <meshStandardMaterial color="#e3f2fd" roughness={0.5} />
+            {/* Back, left, right walls and floor/ceiling - full box minus front */}
+            <mesh position={[0, 0, -halfD]} castShadow receiveShadow>
+                <boxGeometry args={[width, height, 0.5]} />
+                <meshStandardMaterial color={wallColor} roughness={0.5} />
             </mesh>
-            
+            <mesh position={[-halfW, 0, 0]} castShadow receiveShadow>
+                <boxGeometry args={[0.5, height, depth]} />
+                <meshStandardMaterial color={wallColor} roughness={0.5} />
+            </mesh>
+            <mesh position={[halfW, 0, 0]} castShadow receiveShadow>
+                <boxGeometry args={[0.5, height, depth]} />
+                <meshStandardMaterial color={wallColor} roughness={0.5} />
+            </mesh>
+            <mesh position={[0, -height / 2, 0]} castShadow receiveShadow>
+                <boxGeometry args={[width, 0.5, depth]} />
+                <meshStandardMaterial color={wallColor} roughness={0.5} />
+            </mesh>
+            <mesh position={[0, height / 2, 0]} castShadow receiveShadow>
+                <boxGeometry args={[width, 0.5, depth]} />
+                <meshStandardMaterial color={wallColor} roughness={0.5} />
+            </mesh>
+            {/* Front wall with door opening: left panel, right panel, strip above door */}
+            <group position={[-4.0, 0, halfD]}>
+                <mesh castShadow receiveShadow>
+                    <boxGeometry args={[2.0, height, 0.5]} />
+                    <meshStandardMaterial color={wallColor} roughness={0.5} />
+                </mesh>
+            </group>
+            <group position={[4.0, 0, halfD]}>
+                <mesh castShadow receiveShadow>
+                    <boxGeometry args={[2.0, height, 0.5]} />
+                    <meshStandardMaterial color={wallColor} roughness={0.5} />
+                </mesh>
+            </group>
+            <mesh position={[0, height / 2 - 0.2, halfD + 0.05]} castShadow receiveShadow>
+                <boxGeometry args={[width, 0.4, 0.5]} />
+                <meshStandardMaterial color={wallColor} roughness={0.5} />
+            </mesh>
+
             {/* Blue Cross Sign */}
             <group position={[0, height/2 - 1.5, depth/2 + 0.1]}>
                 <mesh position={[0, 0, 0]}>
@@ -284,6 +421,8 @@ const Building: React.FC<{ data: BuildingData, playerRef: React.RefObject<THREE.
     return (
         <group position={[buildingWorldPos[0], buildingWorldPos[1], buildingWorldPos[2]]} rotation={[0, data.rotation, 0]}>
             <RigidBody type="fixed" colliders={false}>
+                {/* Interior floor so player doesn't fall through when inside */}
+                <CuboidCollider args={[4.5, 0.5, 4.5]} position={[0, 0.5, 0]} friction={0} />
                 <CuboidCollider args={[1.25, 0.5, 5.5]} position={[-4.25, 0.5, 0]} friction={0} />
                 <CuboidCollider args={[1.25, 0.5, 5.5]} position={[4.25, 0.5, 0]} friction={0} />
                 <CuboidCollider args={[2.5, 0.5, 4.0]} position={[0, 0.5, -1.5]} friction={0} />
@@ -838,17 +977,22 @@ const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean;
                     <capsuleGeometry args={[0.35, 0.4, 4, 8]} />
                 </mesh>
                 
-                {/* Nurse Outfit: Dress */}
+                {/* Nurse Outfit: Fitted dress with red cross */}
                 {outfit === 'NURSE' && (
                     <group position={[0, -0.1, 0]}>
                         <mesh castShadow position={[0, 0, 0]}>
-                            <cylinderGeometry args={[0.36, 0.45, 0.5, 16, 1, true]} />
+                            <cylinderGeometry args={[0.36, 0.42, 0.55, 16, 1, true]} />
                             <meshToonMaterial color="#FFFFFF" side={THREE.DoubleSide} />
                         </mesh>
                         <mesh position={[0, 0.25, 0]}>
                             <torusGeometry args={[0.36, 0.02, 8, 16]} rotation={[Math.PI/2, 0, 0]} />
                             <meshToonMaterial color="#ff4081" />
                         </mesh>
+                        {/* Red cross on chest */}
+                        <group position={[0, 0.08, 0.38]}>
+                            <mesh position={[0, 0, 0]}><boxGeometry args={[0.12, 0.04, 0.02]} /><meshToonMaterial color="#EE3630" /></mesh>
+                            <mesh position={[0, 0, 0]}><boxGeometry args={[0.04, 0.16, 0.02]} /><meshToonMaterial color="#EE3630" /></mesh>
+                        </group>
                     </group>
                 )}
 
@@ -1086,7 +1230,7 @@ const TownNPC: React.FC<{ data: TownNPCData; playerRef: React.RefObject<THREE.Ob
     
     // Direct store selection for better reactivity to specific NPC changes
     const npcData = useGameStore(s => s.townNPCs.find(n => n.id === initialData.id) || initialData);
-    const { activeDialoguePartner, setActiveDialoguePartner, updateTownNPCPosition, setTownNPCDialogue, gameTime, health, maxHealth, score, interactionRequestTick, buildings, isStanceActive, enemies, healPlayer } = useGameStore();
+    const { activeDialoguePartner, setActiveDialoguePartner, updateTownNPCPosition, setTownNPCDialogue, gameTime, health, maxHealth, score, interactionRequestTick, buildings, isStanceActive, enemies, healPlayer, rechargeMana } = useGameStore();
     
     const [flash, setFlash] = useState(false);
     const [isNear, setIsNear] = useState(false);
@@ -1103,6 +1247,7 @@ const TownNPC: React.FC<{ data: TownNPCData; playerRef: React.RefObject<THREE.Ob
     
     const lastHp = useRef(npcData.hp);
     const lastAiResponse = useRef("");
+    const lastLocalLine = useRef<string | null>(null);
     const npcPosVec = useMemo(() => new THREE.Vector3(...npcData.position), [npcData.position]);
     const playerPosVec = useMemo(() => new THREE.Vector3(), []);
     const tempVec = useMemo(() => new THREE.Vector3(), []);
@@ -1137,21 +1282,25 @@ const TownNPC: React.FC<{ data: TownNPCData; playerRef: React.RefObject<THREE.Ob
 
     const handleInteraction = (e?: any) => {
         if (e) e.stopPropagation();
-        
-        // Allow interaction if close enough OR if already talking (to advance dialogue)
-        const canInteract = isInteractable || (activeDialoguePartner === npcData.id && isNear);
 
-        if (canInteract) {
-            if (activeDialoguePartner === npcData.id) {
-                generateAiDialogue();
-            } else {
-                setActiveDialoguePartner(npcData.id);
-                aiState.current = 'TALKING';
-                // Stop moving immediately
-                if (rb.current) rb.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
-                generateAiDialogue();
-            }
+        // Click behavior:
+        // - If bubble is open for this NPC -> CLOSE it.
+        // - If bubble is closed (or another NPC was talking) -> OPEN and generate a new thought.
+        if (activeDialoguePartner === npcData.id) {
+            // Close current dialogue bubble
+            setActiveDialoguePartner(null);
+            aiState.current = 'IDLE';
+            return;
         }
+
+        // Start a new conversation with this NPC
+        setActiveDialoguePartner(npcData.id);
+        aiState.current = 'TALKING';
+        if (rb.current) {
+            // Stop them from walking while they talk
+            rb.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        }
+        generateAiDialogue();
     };
 
     // Controller interaction support
@@ -1287,9 +1436,10 @@ const TownNPC: React.FC<{ data: TownNPCData; playerRef: React.RefObject<THREE.Ob
     });
 
     const generateAiDialogue = async () => {
-        // Special logic for Nurse
+        // Special logic for Nurse Pikachu: full health + full mana
         if (npcData.role === 'Nurse') {
-            healPlayer(200); // Full heal
+            healPlayer(999); // Full health (capped by maxHealth)
+            rechargeMana(999); // Full mana (capped by maxMana)
             setShowHearts(true);
             setTimeout(() => setShowHearts(false), 3000);
         }
@@ -1299,70 +1449,64 @@ const TownNPC: React.FC<{ data: TownNPCData; playerRef: React.RefObject<THREE.Ob
         setTownNPCDialogue(npcData.id, ""); 
         setTypedText("");
         setIsThinking(true);
-        
+
         try {
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-            
-            // 1. Gather World State for Context-Awareness
-            const timeOfDay = gameTime < 0.3 ? "Morning" : gameTime < 0.7 ? "Day" : "Night";
+            const timeOfDay = gameTime < 0.3 ? "morning" : gameTime < 0.7 ? "day" : "night";
             const nearbyEnemies = enemies.filter(e => !e.isDead && new THREE.Vector3(...e.position).distanceTo(new THREE.Vector3(...npcData.position)) < 30).length;
             const isPlayerHurt = health < maxHealth * 0.5;
             const isPlayerAggressive = isStanceActive;
-            const distToVoid = Math.max(0, 80 - Math.abs(npcData.position[0])); // Rough check for edge of map
-            
-            // 2. Determine Dialogue Mode (Observation vs. Philosophy vs. Task)
-            const roll = Math.random();
-            let mode = 'DEFAULT';
-            let specificInstruction = "";
-            
-            if (npcData.role === 'Nurse') {
-                mode = 'HEALER';
-                specificInstruction = "You are a caring nurse. You just healed the player. Make a sweet, slightly flirtatious comment about them being more careful next time.";
-            } else if (roll > 0.7) {
-                mode = 'PHILOSOPHY'; // 30% chance to question reality
-                specificInstruction = "You are having an existential crisis. You suspect your world is a simulation or a game. Comment on the 'invisible walls', the repetitive nature of your existence, or the fact that the trees don't grow.";
-            } else if (roll > 0.3) {
-                mode = 'OBSERVATION'; // 40% chance to react to immediate surroundings
-                specificInstruction = `React to the current situation. 
-                - Player Health: ${Math.round(health)}/${maxHealth} (Is the hero bleeding?)
-                - Time: ${timeOfDay} (Is it dark?)
-                - Nearby Enemies: ${nearbyEnemies} (Are you scared?)
-                - Player Weapon: ${isPlayerAggressive ? "Drawn" : "Sheathed"} (Why are they ready to fight?)`;
-            } else {
-                mode = 'TOWN_NEEDS'; // 30% chance for normal town gossip
-                specificInstruction = "Discuss what the town needs (a school, a bakery, etc.) or gossip about other NPCs.";
+
+            let finalText = "";
+
+            // Try a few times to avoid repeating the exact same line back-to-back
+            for (let attempt = 0; attempt < 4; attempt++) {
+                const fragments: string[] = [];
+
+                // Role flavor, varied per NPC type
+                if (npcData.role === 'Mayor') {
+                    fragments.push(MAYOR_LINES[Math.floor(Math.random() * MAYOR_LINES.length)]);
+                } else if (npcData.role === 'Merchant') {
+                    fragments.push(MERCHANT_LINES[Math.floor(Math.random() * MERCHANT_LINES.length)]);
+                } else if (npcData.role === 'Blacksmith') {
+                    fragments.push(BLACKSMITH_LINES[Math.floor(Math.random() * BLACKSMITH_LINES.length)]);
+                } else if (npcData.role === 'Historian') {
+                    fragments.push(HISTORIAN_LINES[Math.floor(Math.random() * HISTORIAN_LINES.length)]);
+                } else if (npcData.role === 'Nurse') {
+                    fragments.push(NURSE_LINES[Math.floor(Math.random() * NURSE_LINES.length)]);
+                }
+
+                // Situation flavor
+                if (isPlayerHurt) {
+                    fragments.push("You still look a bit rough. Pain here feels real enough, even if the edges of the world don't.");
+                }
+                if (nearbyEnemies > 0) {
+                    fragments.push(`There are ${nearbyEnemies} things nearby that want us gone, yet they only move when you come close.`);
+                }
+                if (isPlayerAggressive) {
+                    fragments.push("You keep that weapon ready, as if some unseen player might spawn danger at any moment.");
+                }
+                if (timeOfDay === 'night') {
+                    fragments.push("Nights here feel copied and pasted, but the shadows still make me uneasy.");
+                }
+
+                // Existential kicker
+                const existential = EXISTENTIAL_LINES[Math.floor(Math.random() * EXISTENTIAL_LINES.length)];
+                const base = fragments.join(" ") || "Nice weather in this little loop of reality, isn't it?";
+                const candidate = `${base} ${existential}`.slice(0, 220);
+
+                if (candidate !== lastLocalLine.current || attempt === 3) {
+                    finalText = candidate;
+                    break;
+                }
             }
 
-            // 3. Construct Prompt
-            const prompt = `
-            You are ${npcData.name}, a sentient NPC in a prototype game called 'Forest Guardian'.
-            Role: ${npcData.role}
-            Current Mode: ${mode}
-            
-            Context:
-            - The player (a squirrel) is standing right in front of you.
-            - You have a distinct personality based on your role.
-            - Keep it under 35 words.
-            - Make it feel like 'Dark Souls' meets 'Animal Crossing'. Cute but slightly unsettling or deep.
-            
-            Instruction: ${specificInstruction}
-            `;
-
-            const response = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
-                contents: prompt,
-            });
-            
-            const text = response.text || "I... I forgot what I was saying.";
-            setTownNPCDialogue(npcData.id, text);
-        } catch (e: any) {
-            console.error("Gemini Error:", e);
-            let fallbackText = "I have a headache... (API Error)";
-            if (JSON.stringify(e).includes("429") || e.status === 429) {
-                fallbackText = "The gods have silenced me for now. (Quota Exceeded)";
-            }
-            setTownNPCDialogue(npcData.id, fallbackText);
+            lastLocalLine.current = finalText;
+            setTownNPCDialogue(npcData.id, finalText);
+        } catch (err) {
+            console.error("[ForestGuardian][NPC AI] Local dialogue error:", err);
+            setTownNPCDialogue(npcData.id, "I tried to speak, but something in the code twisted my words into silence.");
         } finally {
+            // Always exit thinking state so the bubble swaps from the loading text to the line above.
             setTimeout(() => setIsThinking(false), 50);
         }
     };
@@ -1397,7 +1541,7 @@ const TownNPC: React.FC<{ data: TownNPCData; playerRef: React.RefObject<THREE.Ob
 
             {isTalking && (
                 <Html 
-                    key={`${npcData.id}-${isThinking}-${npcData.aiResponse ? 'resp' : 'none'}`} // KEYED: Force re-render of overlay when generation starts/ends
+                    key={`${npcData.id}-${npcData.aiResponse ? 'resp' : 'none'}`} 
                     position={[0, 3.8, 0]} 
                     center 
                     zIndexRange={[50, 0]}
@@ -1405,16 +1549,9 @@ const TownNPC: React.FC<{ data: TownNPCData; playerRef: React.RefObject<THREE.Ob
                     <div className="npc-dialogue-container" style={{ width: '320px' }}>
                         <div className="npc-name-tag">{npcData.name}</div>
                         <div className="npc-dialogue-bubble">
-                            {isThinking ? (
-                                <span>Whispering to the Code<span className="thinking-dots">...</span></span>
-                            ) : (
-                                <div>
-                                    {currentDisplayText}
-                                    {!isTyping && (
-                                        <div className="mt-2 text-[6px] opacity-40 animate-pulse text-right">Tap again for more...</div>
-                                    )}
-                                </div>
-                            )}
+                            <div>
+                                {currentDisplayText}
+                            </div>
                         </div>
                     </div>
                 </Html>

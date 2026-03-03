@@ -760,7 +760,7 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
   const [, getKeys] = useKeyboardControls();
   const { 
     isGameOver, joystickVector, meleeRequestTick, 
-    meleeSpinRequestTick, jumpRequestTick, isHitStopping, isDodging, 
+    meleeSpinRequestTick, jumpRequestTick, isDodging, 
     isStanceActive, playerSpawnPos, triggerHitImpact, damageEnemy, damageTownNPC, damageEnvironment,
     comboStep, setComboStep, isAttacking, setAttacking, isSpinning, setSpinning, lastAttackTime,
     currentSpeed, isGrounded,
@@ -776,7 +776,7 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
   }, [comboStep, isSpinning]);
 
   useFrame((state, delta) => {
-    if (!rigidBody.current || isGameOver || isHitStopping) return;
+    if (!rigidBody.current || isGameOver) return;
 
     const cv = rigidBody.current.linvel();
     const store = useGameStore.getState();
