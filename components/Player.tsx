@@ -764,12 +764,32 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
     isStanceActive, playerSpawnPos, triggerHitImpact, damageEnemy, damageTownNPC, damageEnvironment,
     comboStep, setComboStep, isAttacking, setAttacking, isSpinning, setSpinning, lastAttackTime,
     currentSpeed, isGrounded,
-    isKamehamehaCharging, isKamehamehaFiring, kamehamehaCharge, setKamehamehaCharging, setKamehamehaFiring, useMana
+    isKamehamehaCharging, isKamehamehaFiring, kamehamehaCharge, setKamehamehaCharging, setKamehamehaFiring, useMana,
+    playerSpawnRevision, registerPlayerPositionGetter
   } = useGameStore();
 
   const lastProcessedTicks = useRef({ melee: 0, spin: 0, jump: 0 });
 
   useEffect(() => { if (playerMeshGroup.current) setPlayerRef(playerMeshGroup.current); }, [setPlayerRef]);
+
+  useEffect(() => {
+    registerPlayerPositionGetter(() => {
+      if (!rigidBody.current) return [playerSpawnPos[0], playerSpawnPos[1], playerSpawnPos[2]];
+      const pos = rigidBody.current.translation();
+      return [pos.x, pos.y, pos.z];
+    });
+    return () => registerPlayerPositionGetter(null);
+  }, [playerSpawnPos, registerPlayerPositionGetter]);
+
+  useEffect(() => {
+    if (!rigidBody.current) return;
+    rigidBody.current.setTranslation(
+      { x: playerSpawnPos[0], y: playerSpawnPos[1], z: playerSpawnPos[2] },
+      true
+    );
+    rigidBody.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    rigidBody.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  }, [playerSpawnPos, playerSpawnRevision]);
   
   useEffect(() => { 
     hitList.current.clear(); 

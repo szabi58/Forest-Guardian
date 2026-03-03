@@ -118,9 +118,91 @@ const createForest = (): EnvironmentObjectData[] => {
 
 const PERSISTENT_ENVIRONMENT = createForest();
 
+const GAME_SAVE_KEY = 'forest-guardian-save-v1';
+const DEFAULT_PLAYER_SPAWN_POS: [number, number, number] = [32, 2, 5];
+
+interface SavedGameData {
+  version: 1;
+  timestamp: number;
+  health: number;
+  maxHealth: number;
+  mana: number;
+  maxMana: number;
+  score: number;
+  isGameOver: boolean;
+  gameTime: number;
+  playerSpawnPos: [number, number, number];
+  enemies: EnemyData[];
+  townNPCs: TownNPCData[];
+  townAnimals: TownAnimalData[];
+  buildings: BuildingData[];
+  environmentObjects: EnvironmentObjectData[];
+  ambientSettings: AmbientSettings;
+}
+
+const canUseStorage = () => typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+const isVec3 = (value: unknown): value is [number, number, number] =>
+  Array.isArray(value) &&
+  value.length === 3 &&
+  isFiniteNumber(value[0]) &&
+  isFiniteNumber(value[1]) &&
+  isFiniteNumber(value[2]);
+
+const hasStoredSave = () => {
+  if (!canUseStorage()) return false;
+  return parseSavedGame(window.localStorage.getItem(GAME_SAVE_KEY)) !== null;
+};
+
+const parseSavedGame = (raw: string | null): SavedGameData | null => {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<SavedGameData> | null;
+    if (!parsed || parsed.version !== 1) return null;
+    if (
+      !isFiniteNumber(parsed.health) ||
+      !isFiniteNumber(parsed.maxHealth) ||
+      !isFiniteNumber(parsed.mana) ||
+      !isFiniteNumber(parsed.maxMana) ||
+      !isFiniteNumber(parsed.score) ||
+      typeof parsed.isGameOver !== 'boolean' ||
+      !isFiniteNumber(parsed.gameTime) ||
+      !isVec3(parsed.playerSpawnPos)
+    ) {
+      return null;
+    }
+    if (
+      !Array.isArray(parsed.enemies) ||
+      !Array.isArray(parsed.townNPCs) ||
+      !Array.isArray(parsed.townAnimals) ||
+      !Array.isArray(parsed.buildings) ||
+      !Array.isArray(parsed.environmentObjects) ||
+      !parsed.ambientSettings
+    ) {
+      return null;
+    }
+    return parsed as SavedGameData;
+  } catch {
+    return null;
+  }
+};
+
+const cloneVec3 = (position: [number, number, number]): [number, number, number] =>
+  [position[0], position[1], position[2]];
+
 interface GameStore extends GameState {
     currentSpeed: number;
+    hasSavedGame: boolean;
+    playerSpawnRevision: number;
+    playerPositionGetter: (() => [number, number, number]) | null;
     setCurrentSpeed: (speed: number) => void;
+    registerPlayerPositionGetter: (fn: (() => [number, number, number]) | null) => void;
+    saveGame: () => boolean;
+    loadGame: () => boolean;
+    refreshSavePresence: () => void;
     cutGrassAt: ((x1: number, z1: number, radius: number, strength: number, x2?: number, z2?: number) => void) | null;
     registerCutGrass: (fn: (x1: number, z1: number, radius: number, strength: number, x2?: number, z2?: number) => void) => void;
     updateEnemyPosition: (id: string, pos: [number, number, number]) => void;
@@ -180,12 +262,105 @@ export const useGameStore = create<GameStore>((set, get) => ({
   shakeIntensity: 0,
   isHitStopping: false,
   currentSpeed: 0,
-  playerSpawnPos: [32, 2, 5],
+  hasSavedGame: hasStoredSave(),
+  playerSpawnRevision: 0,
+  playerPositionGetter: null,
+  playerSpawnPos: [...DEFAULT_PLAYER_SPAWN_POS],
   ambientSettings: { godRays: true, forestDust: true, fallingLeaves: true, alignTreesToSlope: false },
 
   cutGrassAt: null,
   registerCutGrass: (fn) => set({ cutGrassAt: fn }),
   setCurrentSpeed: (currentSpeed) => set({ currentSpeed }),
+  registerPlayerPositionGetter: (fn) => set({ playerPositionGetter: fn }),
+  refreshSavePresence: () => set({ hasSavedGame: hasStoredSave() }),
+
+  saveGame: () => {
+    if (!canUseStorage()) return false;
+    const state = get();
+    const currentPlayerPos = state.playerPositionGetter?.() || state.playerSpawnPos;
+    const payload: SavedGameData = {
+      version: 1,
+      timestamp: Date.now(),
+      health: state.health,
+      maxHealth: state.maxHealth,
+      mana: state.mana,
+      maxMana: state.maxMana,
+      score: state.score,
+      isGameOver: state.isGameOver,
+      gameTime: state.gameTime,
+      playerSpawnPos: cloneVec3(currentPlayerPos),
+      enemies: state.enemies.map((enemy) => ({ ...enemy, position: cloneVec3(enemy.position) })),
+      townNPCs: state.townNPCs.map((npc) => ({ ...npc, position: cloneVec3(npc.position) })),
+      townAnimals: state.townAnimals.map((animal) => ({ ...animal, position: cloneVec3(animal.position) })),
+      buildings: state.buildings.map((building) => ({ ...building, position: cloneVec3(building.position) })),
+      environmentObjects: state.environmentObjects.map((obj) => ({ ...obj, position: cloneVec3(obj.position) })),
+      ambientSettings: { ...state.ambientSettings },
+    };
+
+    try {
+      window.localStorage.setItem(GAME_SAVE_KEY, JSON.stringify(payload));
+      set({ hasSavedGame: true, playerSpawnPos: cloneVec3(currentPlayerPos) });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  loadGame: () => {
+    if (!canUseStorage()) return false;
+    const saved = parseSavedGame(window.localStorage.getItem(GAME_SAVE_KEY));
+    if (!saved) {
+      set({ hasSavedGame: false });
+      return false;
+    }
+
+    set((state) => ({
+      health: saved.health,
+      maxHealth: saved.maxHealth,
+      mana: saved.mana,
+      maxMana: saved.maxMana,
+      score: saved.score,
+      isGameOver: saved.isGameOver,
+      isPaused: false,
+      gameTime: saved.gameTime,
+      projectiles: [],
+      enemies: saved.enemies.map((enemy) => ({ ...enemy, position: cloneVec3(enemy.position) })),
+      townNPCs: saved.townNPCs.map((npc) => ({ ...npc, position: cloneVec3(npc.position) })),
+      townAnimals: saved.townAnimals.map((animal) => ({ ...animal, position: cloneVec3(animal.position) })),
+      buildings: saved.buildings.map((building) => ({ ...building, position: cloneVec3(building.position) })),
+      environmentObjects: saved.environmentObjects.map((obj) => ({ ...obj, position: cloneVec3(obj.position) })),
+      playerSpawnPos: cloneVec3(saved.playerSpawnPos),
+      playerSpawnRevision: state.playerSpawnRevision + 1,
+      ambientSettings: { ...saved.ambientSettings },
+      joystickVector: new Vector2(0, 0),
+      isJoystickActive: false,
+      cameraJoystickVector: new Vector2(0, 0),
+      isCameraJoystickActive: false,
+      cameraDelta: new Vector2(0, 0),
+      isInsideBuildingId: null,
+      activeDialoguePartner: null,
+      interactionRequestTick: 0,
+      isKamehamehaCharging: false,
+      isKamehamehaFiring: false,
+      kamehamehaCharge: 0,
+      meleeRequestTick: 0,
+      meleeSpinRequestTick: 0,
+      isMeleeCharging: false,
+      meleeCharge: 0,
+      comboStep: 0,
+      isAttacking: false,
+      isSpinning: false,
+      lastAttackTime: 0,
+      jumpRequestTick: 0,
+      isDodging: false,
+      isStanceActive: false,
+      isGrounded: true,
+      currentSpeed: 0,
+      hasSavedGame: true,
+    }));
+
+    return true;
+  },
 
   updateEnemyPosition: (id, pos) => set((state) => ({
       enemies: state.enemies.map(e => e.id === id ? { ...e, position: pos } : e)
@@ -276,13 +451,24 @@ export const useGameStore = create<GameStore>((set, get) => ({
     })
   })),
 
-  resetGame: () => set({
-    health: 100, score: 0, isGameOver: false, isPaused: false, mana: 100,
+  resetGame: () => set((state) => ({
+    health: 100,
+    score: 0,
+    isGameOver: false,
+    isPaused: false,
+    mana: 100,
+    maxHealth: 100,
+    maxMana: 100,
     enemies: [...generateInitialEnemies()],
     environmentObjects: [...createForest()],
     projectiles: [],
-    isInsideBuildingId: null
-  }),
+    playerSpawnPos: [...DEFAULT_PLAYER_SPAWN_POS],
+    playerSpawnRevision: state.playerSpawnRevision + 1,
+    isInsideBuildingId: null,
+    activeDialoguePartner: null,
+    interactionRequestTick: 0,
+    currentSpeed: 0,
+  })),
 
   togglePause: () => set((state) => ({ isPaused: !state.isPaused })),
 
