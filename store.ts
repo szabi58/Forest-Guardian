@@ -23,8 +23,8 @@ const INITIAL_BUILDINGS: BuildingData[] = [
 
 const INITIAL_TOWN_NPCS: TownNPCData[] = [
     { 
-        id: 'npc1', name: 'Mayor Oak', role: 'Mayor', position: [35, 1, 5], hp: 100, maxHp: 100, 
-        routine: { homePos: [-5, 1, 20], workPos: [35, 1, 5] }, // Home at b1, Work at Fountain (35, 5)
+        id: 'npc1', name: 'Mayor Oak', role: 'Mayor', position: [32, 1, 8], hp: 100, maxHp: 100, 
+        routine: { homePos: [-5, 1, 20], workPos: [32, 1, 8] }, // Home at b1, usually found near the town square
         dialogue: ["Welcome to Greenleaf!"]
     },
     { 

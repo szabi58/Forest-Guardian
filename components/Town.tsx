@@ -446,6 +446,8 @@ const Building: React.FC<{ data: BuildingData, playerRef: React.RefObject<THREE.
                     <CuboidCollider args={[0.25, wallHeight / 2, wallWidth / 2]} position={[wallWidth / 2, wallHeight / 2, 0]} />
                     <CuboidCollider args={[1.0, wallHeight / 2, 0.25]} position={[-4.0, wallHeight / 2, wallWidth / 2]} />
                     <CuboidCollider args={[1.0, wallHeight / 2, 0.25]} position={[4.0, wallHeight / 2, wallWidth / 2]} />
+                    {/* Roof collider so the player can stand on top of buildings */}
+                    <CuboidCollider args={[wallWidth / 2, 0.25, wallWidth / 2]} position={[0, wallHeight + 0.25, 0]} />
                 </group>
             </RigidBody>
             
@@ -1523,22 +1525,15 @@ const TownNPC: React.FC<{ data: TownNPCData; playerRef: React.RefObject<THREE.Ob
         <RigidBody ref={rb} position={npcData.position} type="dynamic" colliders={false} userData={{ type: 'TOWN_NPC', id: npcData.id }} enabledRotations={[false, true, false]} friction={0.5} linearDamping={1.0}>
             <CuboidCollider args={[0.5, 1.2, 0.5]} position={[0, 1, 0]} />
             
+            {/* Invisible click hitbox for NPC interaction */}
             <mesh position={[0, 1.2, 0]} onPointerDown={handleInteraction}>
                 <boxGeometry args={[3.5, 4.5, 3.5]} />
-                <meshBasicMaterial transparent opacity={0} />
+                <meshBasicMaterial transparent opacity={0} depthWrite={false} depthTest={false} />
             </mesh>
 
             <PikachuModel color={bodyColor} flash={flash} talking={isTalking} isWalking={isMoving} outfit={npcOutfit} />
             <HeartParticles active={showHearts} />
             
-            {isInteractable && !isTalking && (
-                <Html position={[0, 2.8, 0]} center>
-                    <div className="pointer-events-none select-none px-3 py-1 bg-black/60 backdrop-blur-sm border border-yellow-400/30 text-yellow-300 text-[9px] font-black uppercase tracking-widest animate-pulse">
-                        Tap or (▲) to Speak
-                    </div>
-                </Html>
-            )}
-
             {isTalking && (
                 <Html 
                     key={`${npcData.id}-${npcData.aiResponse ? 'resp' : 'none'}`} 

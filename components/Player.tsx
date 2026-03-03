@@ -312,7 +312,9 @@ const DreadSword = React.forwardRef<THREE.Group, { isAttacking: boolean; isSpinn
   });
 
   return (
-    <group ref={ref} position={[0, 0.2, 0.4]} rotation={[Math.PI / 2, 0, 0]} scale={[1.2, 1.2, 1.2]}>
+    // Root of the sword is at the hand; we nudge it slightly forward in local Z
+    // so the blade swings in front of the torso instead of through it.
+    <group ref={ref} position={[0, 0, 0.15]} rotation={[Math.PI / 2, 0, 0]} scale={[1.2, 1.2, 1.2]}>
       <mesh position={[0, -0.4, 0]}>
         <cylinderGeometry args={[0.04, 0.05, 0.5, 8]} />
         <meshStandardMaterial color="#2c1e16" roughness={0.9} />
@@ -379,6 +381,8 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
   const jumpStretch = useRef(1);
   const landSquash = useRef(1);
   const lastIsGrounded = useRef(true);
+  const jumpPhase = useRef<'ground' | 'takeoff' | 'air' | 'land'>('ground');
+  const jumpPhaseTime = useRef(0);
   const walkCycle = useRef(0);
   const lastJumpKeyDown = useRef(false);
 
@@ -400,12 +404,29 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
     setAttackProgress(progress);
 
     // --- Jump & Landing Procedural Animation ---
+    jumpPhaseTime.current += delta;
+
     if (!isGrounded && lastIsGrounded.current) {
+        // Just left the ground: quick crouch / takeoff
+        jumpPhase.current = 'takeoff';
+        jumpPhaseTime.current = 0;
         jumpStretch.current = 1.3;
     }
     if (isGrounded && !lastIsGrounded.current) {
+        // Just landed: brief squash
+        jumpPhase.current = 'land';
+        jumpPhaseTime.current = 0;
         landSquash.current = 0.7;
     }
+
+    // Progress phases over time
+    if (jumpPhase.current === 'takeoff' && jumpPhaseTime.current > 0.12 && !isGrounded) {
+        jumpPhase.current = 'air';
+    }
+    if (jumpPhase.current === 'land' && jumpPhaseTime.current > 0.18) {
+        jumpPhase.current = 'ground';
+    }
+
     lastIsGrounded.current = isGrounded;
 
     jumpStretch.current = THREE.MathUtils.lerp(jumpStretch.current, 1.0, 0.15);
@@ -415,6 +436,24 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
         const targetScaleY = jumpStretch.current * landSquash.current;
         const targetScaleXZ = 1.0 / Math.sqrt(targetScaleY); 
         overallScaleRef.current.scale.set(targetScaleXZ, targetScaleY, targetScaleXZ);
+    }
+
+    // Pose tweaks per jump phase
+    if (bodyRef.current) {
+        if (jumpPhase.current === 'takeoff') {
+            bodyRef.current.position.y = THREE.MathUtils.lerp(bodyRef.current.position.y, 0.5, 0.3);
+        } else if (jumpPhase.current === 'air') {
+            bodyRef.current.position.y = THREE.MathUtils.lerp(bodyRef.current.position.y, 0.8, 0.2);
+        }
+    }
+    if (leftLegRef.current && rightLegRef.current) {
+        if (jumpPhase.current === 'takeoff') {
+            leftLegRef.current.rotation.x = THREE.MathUtils.lerp(leftLegRef.current.rotation.x, -0.6, 0.3);
+            rightLegRef.current.rotation.x = THREE.MathUtils.lerp(rightLegRef.current.rotation.x, -0.6, 0.3);
+        } else if (jumpPhase.current === 'air') {
+            leftLegRef.current.rotation.x = THREE.MathUtils.lerp(leftLegRef.current.rotation.x, 0.3, 0.2);
+            rightLegRef.current.rotation.x = THREE.MathUtils.lerp(rightLegRef.current.rotation.x, -0.3, 0.2);
+        }
     }
 
     if (isDodging) {
@@ -538,27 +577,63 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
 
     // --- SWORD ARM LOGIC ---
     if (rightArmRef.current && swordPivotRef.current) {
+      // Arms: only rotate around the shoulder pivot so they always stay attached.
+      // Sword: always attached to the hand; we just change its rotation for stance/attacks.
+
       if (isSpinning) {
-          rightArmRef.current.position.lerp(new THREE.Vector3(0.5, 0.4, 0.2), 0.3);
-          rightArmRef.current.rotation.x = -0.5;
+          // Big circular spin: arm slightly lifted, sword out
+          rightArmRef.current.rotation.x = -0.6;
+          rightArmRef.current.rotation.y = 0.3;
           swordPivotRef.current.rotation.set(-Math.PI / 2, 0, 0);
       } else if (isAttacking && comboStep > 0) {
-        const eased = Math.sin(progress * Math.PI);
-        rightArmRef.current.position.set(0.4, 0.3, 0.3 + eased * 0.3);
-        if (comboStep === 1) { swordPivotRef.current.rotation.y = THREE.MathUtils.lerp(0.8, -1.8, progress); swordPivotRef.current.rotation.x = -Math.PI / 2; }
-        else if (comboStep === 2) { swordPivotRef.current.rotation.y = THREE.MathUtils.lerp(-1.8, 0.8, progress); swordPivotRef.current.rotation.x = -Math.PI / 2; }
-        else if (comboStep === 3) { swordPivotRef.current.rotation.x = THREE.MathUtils.lerp(-2.8, 0.2, progress); swordPivotRef.current.rotation.y = -0.3; }
+        // Smooth swing timing curve
+        const swing = Math.sin(progress * Math.PI);
+
+        if (comboStep === 1) {
+            // Horizontal right-to-left slash
+            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(rightArmRef.current.rotation.x, -0.4, 0.35);
+            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(rightArmRef.current.rotation.y, 0.3, 0.35);
+            swordPivotRef.current.rotation.set(
+                -Math.PI / 2,
+                THREE.MathUtils.lerp(0.9, -1.7, progress),
+                0
+            );
+        } else if (comboStep === 2) {
+            // Return slash left-to-right
+            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(rightArmRef.current.rotation.x, -0.3, 0.35);
+            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(rightArmRef.current.rotation.y, -0.2, 0.35);
+            swordPivotRef.current.rotation.set(
+                -Math.PI / 2,
+                THREE.MathUtils.lerp(-1.7, 0.9, progress),
+                0
+            );
+        } else if (comboStep === 3) {
+            // Overhead chop
+            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(rightArmRef.current.rotation.x, -1.2, 0.35);
+            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(rightArmRef.current.rotation.y, 0, 0.35);
+            swordPivotRef.current.rotation.set(
+                THREE.MathUtils.lerp(-2.4, 0.1, progress),
+                -0.2,
+                0
+            );
+        }
       } else {
-        rightArmRef.current.position.lerp(new THREE.Vector3(0.35, 0.35, 0.1), 0.15);
-        if (!isMoving) rightArmRef.current.rotation.x = THREE.MathUtils.lerp(rightArmRef.current.rotation.x, 0, 0.2);
-        swordPivotRef.current.rotation.x = THREE.MathUtils.lerp(swordPivotRef.current.rotation.x, isStanceActive ? -1.0 : 0, 0.15);
+        // Idle / walk: arms relaxed at sides, sword angled down slightly
+        if (!isMoving && !isAttacking && !isSpinning) {
+            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(rightArmRef.current.rotation.x, 0, 0.25);
+            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(rightArmRef.current.rotation.y, 0.05, 0.25);
+        }
+        swordPivotRef.current.rotation.x = THREE.MathUtils.lerp(
+            swordPivotRef.current.rotation.x,
+            isStanceActive ? -Math.PI / 2 : -Math.PI / 3,
+            0.15
+        );
         swordPivotRef.current.rotation.y = THREE.MathUtils.lerp(swordPivotRef.current.rotation.y, 0, 0.15);
       }
-      
+
       // Reset Left Arm if not special action or moving
-      if (leftArmRef.current && !isMoving) {
-          leftArmRef.current.rotation.set(0, 0, 0.1);
-          leftArmRef.current.position.lerp(new THREE.Vector3(-0.35, 0.35, 0.1), 0.2);
+      if (leftArmRef.current && !isMoving && !isAttacking && !isSpinning) {
+          leftArmRef.current.rotation.set(0, 0, 0);
       }
     }
 
@@ -686,18 +761,21 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
             </group>
 
             {/* --- ARMS --- */}
-            <group ref={leftArmRef} position={[-0.35, 0.35, 0.1]}>
-                <mesh position={[0, -0.15, 0]} rotation={[0, 0, 0.2]} castShadow>
+            <group ref={leftArmRef} position={[-0.35, 0.24, 0.08]}>
+                {/* Upper arm */}
+                <mesh position={[0, -0.15, 0]} castShadow>
                     <capsuleGeometry args={[0.09, 0.35, 4, 8]} />
                     <primitive object={furMaterial} attach="material" />
                 </mesh>
             </group>
-            <group ref={rightArmRef} position={[0.35, 0.35, 0.1]}>
-                <group ref={swordPivotRef}>
-                    <mesh position={[0, -0.15, 0]} rotation={[0, 0, -0.2]} castShadow>
-                        <capsuleGeometry args={[0.09, 0.35, 4, 8]} />
-                        <primitive object={furMaterial} attach="material" />
-                    </mesh>
+            <group ref={rightArmRef} position={[0.35, 0.24, 0.08]}>
+                {/* Upper arm */}
+                <mesh position={[0, -0.15, 0]} castShadow>
+                    <capsuleGeometry args={[0.09, 0.35, 4, 8]} />
+                    <primitive object={furMaterial} attach="material" />
+                </mesh>
+                {/* Hand at end of arm, sword attached here */}
+                <group ref={swordPivotRef} position={[0, -0.35, 0]}>
                     <DreadSword 
                         tipRef={swordTipRef} 
                         baseRef={swordBaseRef}
@@ -770,7 +848,19 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
   const lastProcessedTicks = useRef({ melee: 0, spin: 0, jump: 0 });
 
   useEffect(() => { if (playerMeshGroup.current) setPlayerRef(playerMeshGroup.current); }, [setPlayerRef]);
-  
+
+  // Global Space key listener so jumping works reliably even if KeyboardControls focus is weird.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault();
+        useGameStore.getState().requestJump();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   useEffect(() => { 
     hitList.current.clear(); 
   }, [comboStep, isSpinning]);
@@ -781,6 +871,7 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
     const cv = rigidBody.current.linvel();
     const store = useGameStore.getState();
     const currentPos = rigidBody.current.translation();
+    let pendingJump = false;
 
     // --- ENHANCED GROUNDING CHECK (RAYCAST) ---
     const rayOrigin = { x: currentPos.x, y: currentPos.y + 0.5, z: currentPos.z };
@@ -929,9 +1020,8 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
 
     if (jumpRequestTick !== lastProcessedTicks.current.jump) {
         lastProcessedTicks.current.jump = jumpRequestTick;
-        // Always allow a jump when requested so the button / spacebar
-        // reliably launches the character.
-        rigidBody.current.applyImpulse({ x: 0, y: JUMP_FORCE, z: 0 }, true);
+        // Always schedule a jump on request so Space / button reliably launch the character.
+        pendingJump = true;
     }
 
     try {
@@ -982,6 +1072,11 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
         } else {
             vx = THREE.MathUtils.lerp(cv.x, 0, 0.2); vz = THREE.MathUtils.lerp(cv.z, 0, 0.2);
         }
+
+        // Apply jump after movement adjustments so we don't overwrite it with old Y velocity.
+        if (pendingJump) {
+            vy = Math.max(vy, JUMP_FORCE);
+        }
         
         const nextSpeed = Math.sqrt(vx**2 + vz**2);
         rigidBody.current.setLinvel({ x: vx, y: vy, z: vz }, true);
@@ -989,9 +1084,9 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
             currentSpeed: Number.isFinite(nextSpeed) ? nextSpeed : 0
         });
 
-        // Keyboard jump (Space via KeyboardControls "jump" action)
+        // Keyboard jump (Space via KeyboardControls "jump" action) feeds into the same jumpRequestTick used by the UI button.
         if (jump && !lastJumpKeyDown.current) {
-            rigidBody.current.applyImpulse({ x: 0, y: JUMP_FORCE, z: 0 }, true);
+            useGameStore.getState().requestJump();
         }
         lastJumpKeyDown.current = jump;
     } catch (e) {}
