@@ -1,0 +1,107 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Forest Guardian</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      body, html, #root {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background-color: #1a1a1a;
+      }
+      /* Disable selection for game feel */
+      canvas {
+        outline: none;
+        user-select: none;
+      }
+
+      /* Pixel-art Dialogue Bubble Styles */
+      .npc-dialogue-container {
+        pointer-events: none;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        width: 280px;
+        transform: translateY(-20px);
+      }
+
+      .npc-dialogue-bubble {
+        background: white;
+        border: 4px solid #000;
+        padding: 12px;
+        color: #000;
+        font-family: 'Press Start 2P', cursive;
+        font-size: 10px;
+        line-height: 1.6;
+        text-align: center;
+        box-shadow: 6px 6px 0px rgba(0,0,0,0.2);
+        position: relative;
+        width: 100%;
+      }
+
+      .npc-dialogue-bubble::after {
+        content: '';
+        position: absolute;
+        bottom: -16px;
+        left: 50%;
+        transform: translateX(-50%);
+        border-width: 12px 12px 0;
+        border-style: solid;
+        border-color: #000 transparent transparent;
+      }
+
+      .npc-name-tag {
+        background: #000;
+        color: #fff;
+        font-family: 'Press Start 2P', cursive;
+        font-size: 8px;
+        padding: 4px 8px;
+        margin-bottom: -4px;
+        z-index: 10;
+        text-transform: uppercase;
+      }
+
+      .thinking-dots {
+        display: inline-block;
+        animation: thinking 1s infinite;
+      }
+
+      @keyframes thinking {
+        0%, 100% { opacity: 0.3; }
+        50% { opacity: 1; }
+      }
+    </style>
+    <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react/": "https://esm.sh/react@18.3.1/",
+    "react-dom": "https://esm.sh/react-dom@18.3.1",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+    "three": "https://esm.sh/three@0.170.0",
+    "three/": "https://esm.sh/three@0.170.0/",
+    "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.17.10?external=three,react,react-dom",
+    "@react-three/drei": "https://esm.sh/@react-three/drei@9.114.0?external=three,react,react-dom,@react-three/fiber",
+    "@react-three/rapier": "https://esm.sh/@react-three/rapier@1.4.0?external=three,react,react-dom,@react-three/fiber",
+    "zustand": "https://esm.sh/zustand@4.5.5?external=react",
+    "uuid": "https://esm.sh/uuid@9.0.1",
+    "@react-three/postprocessing": "https://esm.sh/@react-three/postprocessing@2.16.3?external=three,react,react-dom,@react-three/fiber",
+    "@google/genai": "https://esm.sh/@google/genai@^1.41.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/"
+  }
+}
+</script>
+  <link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
