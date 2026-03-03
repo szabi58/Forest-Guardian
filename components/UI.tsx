@@ -9,6 +9,7 @@ export const UI: React.FC = () => {
     health, maxHealth, mana, maxMana, score, isGameOver, resetGame, isPaused, togglePause,
     requestMelee, requestMeleeSpin, setMeleeCharging, meleeCharge, isMeleeCharging,
     requestJump, isStanceActive, toggleStance, ambientSettings, toggleAmbientSetting, snapAllTrees,
+    saveGame, loadGame, hasSavedGame, refreshSavePresence,
     
     // Kamehameha Actions
     setKamehamehaCharging, fireKamehameha, kamehamehaCharge, isKamehamehaCharging
@@ -16,6 +17,10 @@ export const UI: React.FC = () => {
 
   const [showSettings, setShowSettings] = useState(false);
   const meleePointerStart = useRef(0);
+
+  useEffect(() => {
+    refreshSavePresence();
+  }, [refreshSavePresence]);
 
   if (isGameOver) {
     return (
@@ -35,6 +40,19 @@ export const UI: React.FC = () => {
           <h2 className="text-5xl font-black italic uppercase tracking-widest mb-12 animate-pulse">Game Paused</h2>
           <div className="flex flex-col gap-4 w-64">
             <button onClick={togglePause} className="px-6 py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-black uppercase tracking-widest transition-all">Resume</button>
+            <button
+              onClick={() => saveGame()}
+              className="px-6 py-4 bg-emerald-700/50 hover:bg-emerald-600 text-white font-black uppercase tracking-widest transition-all"
+            >
+              Save Game
+            </button>
+            <button
+              onClick={() => loadGame()}
+              disabled={!hasSavedGame}
+              className={`px-6 py-4 text-white font-black uppercase tracking-widest transition-all ${hasSavedGame ? 'bg-sky-700/50 hover:bg-sky-600' : 'bg-white/10 text-white/40 cursor-not-allowed'}`}
+            >
+              {hasSavedGame ? 'Load Game' : 'No Save Found'}
+            </button>
             <button onClick={() => setShowSettings(!showSettings)} className="px-6 py-4 bg-white/10 hover:bg-white/20 text-white font-black uppercase tracking-widest transition-all">Settings</button>
             <button onClick={resetGame} className="px-6 py-4 bg-red-900/40 hover:bg-red-600 text-white font-black uppercase tracking-widest transition-all">Reset Prototype</button>
           </div>

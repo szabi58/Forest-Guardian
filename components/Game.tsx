@@ -119,6 +119,12 @@ export const Game: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    const state = useGameStore.getState();
+    state.refreshSavePresence();
+    state.loadGame();
+  }, []);
+
   const sunPos: [number, number, number] = [
     Math.cos(gameTime * Math.PI * 2) * 100,
     Math.sin(gameTime * Math.PI * 2) * 100,
