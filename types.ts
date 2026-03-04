@@ -80,6 +80,11 @@ export interface TownAnimalData {
   position: [number, number, number];
 }
 
+export interface TownChildData {
+  id: string;
+  position: [number, number, number];
+}
+
 export interface EnvironmentObjectData {
   id: string;
   type: 'TREE' | 'ROCK' | 'LOG';
@@ -107,6 +112,7 @@ export interface GameState {
   enemies: EnemyData[];
   townNPCs: TownNPCData[];
   townAnimals: TownAnimalData[];
+  townChildren: TownChildData[];
   buildings: BuildingData[];
   environmentObjects: EnvironmentObjectData[];
   joystickVector: Vector2;

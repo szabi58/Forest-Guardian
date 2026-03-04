@@ -7,7 +7,7 @@ import { Vector2 } from 'three';
 export const UI: React.FC = () => {
   const { 
     health, maxHealth, mana, maxMana, score, isGameOver, resetGame, isPaused, togglePause,
-    requestMelee, requestMeleeSpin, setMeleeCharging, meleeCharge, isMeleeCharging,
+    requestMelee, setMeleeCharging, meleeCharge, isMeleeCharging,
     requestJump, isStanceActive, toggleStance, ambientSettings, toggleAmbientSetting, snapAllTrees,
     
     // Kamehameha Actions
@@ -15,7 +15,6 @@ export const UI: React.FC = () => {
   } = useGameStore();
 
   const [showSettings, setShowSettings] = useState(false);
-  const meleePointerStart = useRef(0);
 
   if (isGameOver) {
     return (
@@ -108,13 +107,11 @@ export const UI: React.FC = () => {
                         <div className="absolute inset-0 -m-1 border-2 border-red-500 animate-ping rounded-none opacity-50" />
                     )}
                     <button
-                        onPointerDown={(e) => { e.stopPropagation(); meleePointerStart.current = Date.now(); setMeleeCharging(true); }}
+                        onPointerDown={(e) => { e.stopPropagation(); setMeleeCharging(true); }}
                         onPointerUp={(e) => { 
                             e.stopPropagation(); 
                             if (isMeleeCharging) { 
-                                const heldDuration = Date.now() - meleePointerStart.current;
-                                if (heldDuration < 400) { requestMelee(); }
-                                else if (meleeCharge >= 0.95) { requestMeleeSpin(); }
+                                requestMelee();
                                 setMeleeCharging(false); 
                             } 
                         }}

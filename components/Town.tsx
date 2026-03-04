@@ -6,7 +6,7 @@ import { Billboard, Text, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { GoogleGenAI } from "@google/genai";
 import { useGameStore } from '../store';
-import { BuildingData, TownNPCData, TownAnimalData } from '../types';
+import { BuildingData, TownNPCData, TownAnimalData, TownChildData } from '../types';
 import { getTerrainHeight } from './Environment';
 
 // --- NPC DIALOGUE FLAVOR ---
@@ -203,13 +203,6 @@ const BuildingDoor: React.FC<{ playerRef: React.RefObject<THREE.Object3D>; build
                         <boxGeometry args={[2.5, 3.6, 0.1]} />
                         <meshStandardMaterial ref={materialRef} color="#3e2723" roughness={0.8} />
                         <mesh position={[0.9, 0, 0.1]}><sphereGeometry args={[0.1, 16, 16]} /><meshStandardMaterial color="#d4af37" metalness={0.9} roughness={0.1} /></mesh>
-                        {isNear && (
-                            <Html position={[0, 0.5, 0]} center>
-                                <div className="pointer-events-none select-none px-3 py-1 bg-black/80 backdrop-blur-sm border border-white/20 text-white text-[10px] font-black uppercase tracking-widest animate-bounce whitespace-nowrap">
-                                    Tap or (▲) to {isOpen ? 'Close' : 'Open'}
-                                </div>
-                            </Html>
-                        )}
                     </mesh>
                     <CuboidCollider args={[1.25, 1.8, 0.05]} position={[0, 1.8, 0.05]} />
                 </group>
@@ -954,6 +947,131 @@ const GateGuard: React.FC<{ position: [number, number]; gateSide: 'west' | 'east
     );
 };
 
+// Young children Pikachus running around town playing (chase, run to random spots, bounce)
+const TOWN_CHILD_BOUNDS = { xMin: 2, xMax: 92, zMin: -17, zMax: 22 };
+const CHILD_RUN_SPEED = 4.2;
+const CHILD_CHASE_RANGE = 14;
+const CHILD_ARRIVAL_DIST = 1.2;
+
+type ChildState = 'RUN' | 'BOUNCE';
+
+const TownChild: React.FC<{ data: TownChildData }> = ({ data: initialData }) => {
+    const childData = useGameStore(s => s.townChildren.find(c => c.id === initialData.id) || initialData);
+    const townChildren = useGameStore(s => s.townChildren);
+    const updateTownChildPosition = useGameStore(s => s.updateTownChildPosition);
+
+    const rb = useRef<RapierRigidBody>(null);
+    const groupRef = useRef<THREE.Group>(null);
+    const targetX = useRef(childData.position[0]);
+    const targetZ = useRef(childData.position[2]);
+    const stateRef = useRef<ChildState>('RUN');
+    const stateTimer = useRef(0.5 + Math.random() * 1.5);
+    const bouncePhase = useRef(Math.random() * Math.PI * 2);
+    const [isRunning, setIsRunning] = useState(true);
+
+    const pickNewTarget = () => {
+        if (!rb.current) return;
+        const pos = rb.current.translation();
+        const posX = pos.x;
+        const posZ = pos.z;
+        const others = townChildren.filter(c => c.id !== childData.id);
+        const inRange = others.filter(c => {
+            const dx = c.position[0] - posX;
+            const dz = c.position[2] - posZ;
+            return dx * dx + dz * dz <= CHILD_CHASE_RANGE * CHILD_CHASE_RANGE;
+        });
+        if (inRange.length > 0 && Math.random() < 0.4) {
+            const chase = inRange[Math.floor(Math.random() * inRange.length)];
+            targetX.current = chase.position[0];
+            targetZ.current = chase.position[2];
+        } else {
+            targetX.current = TOWN_CHILD_BOUNDS.xMin + Math.random() * (TOWN_CHILD_BOUNDS.xMax - TOWN_CHILD_BOUNDS.xMin);
+            targetZ.current = TOWN_CHILD_BOUNDS.zMin + Math.random() * (TOWN_CHILD_BOUNDS.zMax - TOWN_CHILD_BOUNDS.zMin);
+        }
+    };
+
+    useFrame((state, delta) => {
+        if (!rb.current) return;
+        const t = state.clock.elapsedTime;
+        const pos = rb.current.translation();
+        const posX = pos.x;
+        const posZ = pos.z;
+        stateTimer.current -= delta;
+
+        if (stateRef.current === 'BOUNCE') {
+            rb.current.setLinvel({ x: 0, y: rb.current.linvel().y, z: 0 }, true);
+            if (stateTimer.current <= 0) {
+                stateRef.current = 'RUN';
+                stateTimer.current = 2 + Math.random() * 4;
+                pickNewTarget();
+                setIsRunning(true);
+            }
+            if (groupRef.current) {
+                const bounce = Math.sin(t * 14 + bouncePhase.current) * 0.08;
+                groupRef.current.position.y = bounce;
+            }
+            const clampX = THREE.MathUtils.clamp(posX, TOWN_CHILD_BOUNDS.xMin, TOWN_CHILD_BOUNDS.xMax);
+            const clampZ = THREE.MathUtils.clamp(posZ, TOWN_CHILD_BOUNDS.zMin, TOWN_CHILD_BOUNDS.zMax);
+            updateTownChildPosition(childData.id, [clampX, pos.y, clampZ]);
+            return;
+        }
+
+        const dx = targetX.current - posX;
+        const dz = targetZ.current - posZ;
+        const distSq = dx * dx + dz * dz;
+        const dist = Math.sqrt(distSq);
+
+        if (dist < CHILD_ARRIVAL_DIST || stateTimer.current <= 0) {
+            stateRef.current = 'BOUNCE';
+            stateTimer.current = 0.6 + Math.random() * 1.0;
+            bouncePhase.current = Math.random() * Math.PI * 2;
+            setIsRunning(false);
+            rb.current.setLinvel({ x: 0, y: rb.current.linvel().y, z: 0 }, true);
+        } else {
+            const dirX = dx / dist;
+            const dirZ = dz / dist;
+            rb.current.setLinvel({ x: dirX * CHILD_RUN_SPEED, y: rb.current.linvel().y, z: dirZ * CHILD_RUN_SPEED }, true);
+            if (groupRef.current) {
+                groupRef.current.rotation.y = Math.atan2(dirX, dirZ);
+            }
+        }
+
+        const clampedX = THREE.MathUtils.clamp(pos.x, TOWN_CHILD_BOUNDS.xMin, TOWN_CHILD_BOUNDS.xMax);
+        const clampedZ = THREE.MathUtils.clamp(pos.z, TOWN_CHILD_BOUNDS.zMin, TOWN_CHILD_BOUNDS.zMax);
+        if (clampedX !== pos.x || clampedZ !== pos.z) {
+            rb.current.setTranslation({ x: clampedX, y: pos.y, z: clampedZ }, true);
+        }
+        updateTownChildPosition(childData.id, [clampedX, pos.y, clampedZ]);
+    });
+
+    return (
+        <RigidBody
+            ref={rb}
+            position={childData.position}
+            type="dynamic"
+            colliders={false}
+            userData={{ type: 'TOWN_CHILD', id: childData.id }}
+            enabledRotations={[false, true, false]}
+            friction={0.5}
+            linearDamping={2}
+            lockTranslations={false}
+        >
+            <CuboidCollider args={[0.25, 0.4, 0.25]} position={[0, 0.5, 0]} />
+            <group ref={groupRef} position={[0, 0, 0]}>
+                <group scale={0.6}>
+                    <PikachuModel
+                        color="#FFE066"
+                        flash={false}
+                        talking={false}
+                        isWalking={isRunning}
+                        outfit="NONE"
+                    />
+                </group>
+            </group>
+        </RigidBody>
+    );
+};
+
 const Fountain: React.FC<{ position: [number, number, number] }> = ({ position }) => {
     const particleCount = 200;
     const meshRef = useRef<THREE.InstancedMesh>(null);
@@ -1120,7 +1238,7 @@ const HeartParticles: React.FC<{ active: boolean }> = ({ active }) => {
 };
 
 // Pikachu-inspired Forest NPC Model
-const SPEAR_SWING_DURATION = 0.4;
+const SPEAR_SWING_DURATION = 0.5;
 
 const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean; isWalking?: boolean; outfit?: 'NONE' | 'MAYOR' | 'NURSE' | 'SAGE' | 'BLACKSMITH' | 'GLADIATOR'; spearSwingStartTime?: number | null }> = ({ color = "#F5D000", flash, talking, isWalking = false, outfit = 'NONE', spearSwingStartTime }) => {
     const groupRef = useRef<THREE.Group>(null);
@@ -1158,7 +1276,7 @@ const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean;
         if (leftEarRef.current) leftEarRef.current.rotation.z = 0.5 + Math.sin(t * 3) * 0.05;
         if (rightEarRef.current) rightEarRef.current.rotation.z = -0.5 - Math.cos(t * 3) * 0.05;
 
-        // Spear attack (guards): override right arm with thrust when swinging
+        // Spear attack (guards): wind-up then forward swing when attacking
         const spearProgress = spearSwingStartTime != null && spearSwingStartTime > 0
             ? Math.max(0, 1 - (t - spearSwingStartTime) / SPEAR_SWING_DURATION)
             : 0;
@@ -1191,9 +1309,20 @@ const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean;
         }
 
         if (isSpearSwinging && rightArmRef.current) {
-            const swing = Math.sin(spearProgress * Math.PI);
-            rightArmRef.current.rotation.x = -0.5 - swing * 1.15;
-            rightArmRef.current.rotation.y = swing * 0.15;
+            // Wind-up (arm back) -> strike (arm forward) -> return to rest
+            let armX: number;
+            let armY: number;
+            if (spearProgress >= 0.5) {
+                const windUp = (1 - spearProgress) * 2; // 0 at progress=1, 1 at progress=0.5
+                armX = THREE.MathUtils.lerp(0.5, -1.7, windUp);
+                armY = THREE.MathUtils.lerp(0, 0.2, windUp);
+            } else {
+                const returnToRest = 1 - spearProgress * 2; // 0 at progress=0.5, 1 at progress=0
+                armX = THREE.MathUtils.lerp(-1.7, -0.5, returnToRest);
+                armY = THREE.MathUtils.lerp(0.2, 0, returnToRest);
+            }
+            rightArmRef.current.rotation.x = armX;
+            rightArmRef.current.rotation.y = armY;
         }
 
         // Talking Animation
@@ -1896,9 +2025,18 @@ export const TownSystem: React.FC<{ playerRef: React.RefObject<THREE.Object3D> }
     const buildings = useGameStore(s => s.buildings);
     const townNPCs = useGameStore(s => s.townNPCs);
     const townAnimals = useGameStore(s => s.townAnimals);
+    const townChildren = useGameStore(s => s.townChildren);
+
+    // Solid floor under the whole town so the player doesn't fall through (trimesh is unreliable here)
+    const townFloorY = getTerrainHeight(32, 5);
+    const townFloorHalfX = 65;
+    const townFloorHalfZ = 52;
 
     return (
         <group>
+            <RigidBody type="fixed" position={[37, townFloorY, 5]} friction={1} colliders={false}>
+                <CuboidCollider args={[townFloorHalfX, 0.5, townFloorHalfZ]} />
+            </RigidBody>
             <Fountain position={[35, 0, 5]} />
             <PathNetwork />
             <TownProps />
@@ -1909,6 +2047,10 @@ export const TownSystem: React.FC<{ playerRef: React.RefObject<THREE.Object3D> }
 
             {townNPCs.map(npc => (
                 <TownNPC key={npc.id} data={npc} playerRef={playerRef} />
+            ))}
+
+            {townChildren.map(child => (
+                <TownChild key={child.id} data={child} />
             ))}
 
             {townAnimals.map(animal => {

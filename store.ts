@@ -1,6 +1,6 @@
 
 import { create } from 'zustand';
-import { GameState, ProjectileData, EnemyData, EnvironmentObjectData, AmbientSettings, TownNPCData, TownAnimalData, BuildingData } from './types';
+import { GameState, ProjectileData, EnemyData, EnvironmentObjectData, AmbientSettings, TownNPCData, TownAnimalData, TownChildData, BuildingData } from './types';
 import { Vector2 } from 'three';
 import { getTerrainHeight } from './components/Environment';
 
@@ -54,6 +54,14 @@ const INITIAL_TOWN_ANIMALS: TownAnimalData[] = [
     { id: 'dog2', type: 'DOG', position: [50, 0, 2] },
 ];
 
+const INITIAL_TOWN_CHILDREN: TownChildData[] = [
+    { id: 'child1', position: [28, 0, 6] },
+    { id: 'child2', position: [38, 0, 4] },
+    { id: 'child3', position: [45, 0, 10] },
+    { id: 'child4', position: [22, 0, -5] },
+    { id: 'child5', position: [55, 0, 0] },
+];
+
 // Town fence polygon (closed): vertices [x, z] clockwise. Matches Fence controlPoints in Town.tsx.
 const TOWN_FENCE_POLYGON: [number, number][] = [
     [-25, 9], [-25, 25], [20, 55], [60, 55], [90, 45], [100, 15], [100, 9], [100, 1], [100, -5],
@@ -101,6 +109,20 @@ function nearestPointOutsideFence(x: number, z: number): [number, number] {
         }
     }
     return [bestX, bestZ];
+}
+
+// Gate openings: west x=-25 z in [1,9], east x=100 z in [1,9]. Enemies may only be inside if in a gate.
+function isInTownGateZone(x: number, z: number): boolean {
+    const westGate = x >= -26 && x <= -24 && z >= 0.5 && z <= 9.5;
+    const eastGate = x >= 99 && x <= 101 && z >= 0.5 && z <= 9.5;
+    return westGate || eastGate;
+}
+
+/** If (x,z) is inside the town fence and not in a gate, returns nearest point outside; otherwise returns [x,z]. */
+export function getEnemyPositionClampedOutsideTown(x: number, z: number): [number, number] {
+    if (!isInsideTownFence(x, z)) return [x, z];
+    if (isInTownGateZone(x, z)) return [x, z];
+    return nearestPointOutsideFence(x, z);
 }
 
 const getRandomSpawnPosition = (radius: number): [number, number, number] => {
@@ -182,6 +204,7 @@ interface GameStore extends GameState {
     setEnemyPushImpulse: (id: string, vx: number, vz: number) => void;
     consumeEnemyPushImpulse: (id: string) => { vx: number; vz: number } | null;
     updateTownNPCPosition: (id: string, pos: [number, number, number]) => void;
+    updateTownChildPosition: (id: string, pos: [number, number, number]) => void;
     setTownNPCDialogue: (id: string, text: string) => void;
     damageTownNPC: (id: string, amount: number) => void;
     clearCameraDelta: () => void;
@@ -203,6 +226,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   enemies: [...INITIAL_ENEMIES],
   townNPCs: [...INITIAL_TOWN_NPCS],
   townAnimals: [...INITIAL_TOWN_ANIMALS],
+  townChildren: [...INITIAL_TOWN_CHILDREN],
   buildings: [...INITIAL_BUILDINGS],
   environmentObjects: [...PERSISTENT_ENVIRONMENT],
   joystickVector: new Vector2(0, 0),
@@ -265,6 +289,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   updateTownNPCPosition: (id, pos) => set((state) => ({
       townNPCs: state.townNPCs.map(n => n.id === id ? { ...n, position: pos } : n)
+  })),
+
+  updateTownChildPosition: (id, pos) => set((state) => ({
+      townChildren: state.townChildren.map(c => c.id === id ? { ...c, position: pos } : c)
   })),
 
   setTownNPCDialogue: (id, text) => set((state) => ({

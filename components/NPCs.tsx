@@ -2,7 +2,7 @@
 import React, { useRef, useState, useMemo, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { RigidBody, RapierRigidBody, CuboidCollider } from '@react-three/rapier';
-import { useGameStore } from '../store';
+import { useGameStore, getEnemyPositionClampedOutsideTown } from '../store';
 import { EnemyData } from '../types';
 import * as THREE from 'three';
 
@@ -571,20 +571,29 @@ const NPC: React.FC<{ data: EnemyData; playerRef: React.RefObject<THREE.Object3D
 
     const pos = rb.translation();
 
+    // Keep enemies outside town fence unless they are in a gate (only valid entrance)
+    const [clampedX, clampedZ] = getEnemyPositionClampedOutsideTown(pos.x, pos.z);
+    if (clampedX !== pos.x || clampedZ !== pos.z) {
+      rb.setTranslation({ x: clampedX, y: pos.y, z: clampedZ }, true);
+      rb.setLinvel({ x: 0, y: rb.linvel().y, z: 0 }, true);
+    }
+    const px = clampedX;
+    const pz = clampedZ;
+
     // Apply guard push impulse (e.g. when hit by town guards at gate)
     const impulse = consumeEnemyPushImpulse(data.id);
     if (impulse) {
       const vel = rb.linvel();
       rb.setLinvel({ x: vel.x + impulse.vx, y: vel.y, z: vel.z + impulse.vz }, true);
     }
-    
+
     // Sync position to store every frame so gate guards (and sword) see current position
-    updateEnemyPosition(data.id, [pos.x, pos.y, pos.z]);
+    updateEnemyPosition(data.id, [px, pos.y, pz]);
 
     playerRef.current.getWorldPosition(playerWorldPos);
-    
-    const dist = Math.sqrt((pos.x - playerWorldPos.x) ** 2 + (pos.z - playerWorldPos.z) ** 2);
-    const dir = tempVec.set(playerWorldPos.x - pos.x, 0, playerWorldPos.z - pos.z).normalize();
+
+    const dist = Math.sqrt((px - playerWorldPos.x) ** 2 + (pz - playerWorldPos.z) ** 2);
+    const dir = tempVec.set(playerWorldPos.x - px, 0, playerWorldPos.z - pz).normalize();
     
     // Trex has much larger aggro range
     const aggroRange = data.type === 'TREX' ? 120 : 45;

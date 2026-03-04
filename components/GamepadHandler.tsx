@@ -105,13 +105,7 @@ export const GamepadHandler: React.FC = () => {
         }
         if (isReleased(2) || isReleased(5)) {
             if (chargeStartTime.current) {
-                const duration = Date.now() - chargeStartTime.current;
-                if (duration < 400) {
-                    store.requestMelee();
-                } else if (store.meleeCharge >= 0.95) {
-                    store.requestMeleeSpin();
-                    triggerVibration(1.0, 300);
-                }
+                store.requestMelee();
                 store.setMeleeCharging(false);
             }
         }

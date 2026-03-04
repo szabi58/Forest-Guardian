@@ -587,15 +587,20 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
     }
 
     if (isDodging) {
-      dodgeRotation.current += delta * 15.7; 
+      // One full forward roll (2π) over the 450ms dodge
+      const ROLLS_PER_DODGE = 1;
+      const DODGE_DURATION_S = 0.45;
+      const dodgeRollSpeed = (ROLLS_PER_DODGE * Math.PI * 2) / DODGE_DURATION_S;
+      dodgeRotation.current += delta * dodgeRollSpeed;
       if (bodyRef.current) {
         bodyRef.current.rotation.x = dodgeRotation.current;
-        bodyRef.current.position.y = 0.45 + Math.sin(dodgeRotation.current * 2) * 0.15;
+        bodyRef.current.position.y = 0.5;
       }
     } else {
-      dodgeRotation.current = 0; 
+      dodgeRotation.current = 0;
       if (bodyRef.current) {
-        bodyRef.current.rotation.x = THREE.MathUtils.lerp(bodyRef.current.rotation.x, isMoving ? 0.2 : 0, 0.1);
+        // Snap to landed pose so we don't lerp backwards after a full forward roll
+        bodyRef.current.rotation.x = isMoving ? 0.2 : 0;
         if (isSpinning) {
             const spinProgress = Math.min(timeSinceAttack / SPIN_DURATION, 1);
             bodyRef.current.rotation.y = THREE.MathUtils.smoothstep(spinProgress, 0, 1) * Math.PI * 2;

@@ -388,11 +388,17 @@ const Grass: React.FC = () => {
 
 export const Environment: React.FC = () => {
   const envObjs = useGameStore(s => s.environmentObjects);
-  const size = 500, segs = 150; 
+  const size = 500, segs = 150;
+  // Single terrain geometry with Y-up so collider and visual match (avoids trimesh rotation issues)
   const geo = useMemo(() => {
     const g = new THREE.PlaneGeometry(size, size, segs, segs);
     const pos = g.attributes.position.array as Float32Array;
-    for (let i = 0; i < pos.length; i += 3) { pos[i + 2] = getTerrainHeight(pos[i], -pos[i + 1]); }
+    for (let i = 0; i < pos.length; i += 3) {
+      const x = pos[i];
+      const z = -pos[i + 1];
+      pos[i + 2] = getTerrainHeight(x, z);
+    }
+    g.rotateX(-Math.PI / 2);
     g.computeVertexNormals();
     return g;
   }, []);
@@ -428,12 +434,19 @@ export const Environment: React.FC = () => {
       return mat;
   }, []);
 
+  // Safety floor: prevents falling through the map if trimesh collider fails or tunnels
+  const safetyFloorY = -25;
+  const halfExtent = 260;
+
   return (
     <group>
       <RigidBody type="fixed" friction={2} colliders={false}>
         <MeshCollider type="trimesh">
-            <mesh geometry={geo} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={material} />
+            <mesh geometry={geo} receiveShadow material={material} />
         </MeshCollider>
+      </RigidBody>
+      <RigidBody type="fixed" position={[0, safetyFloorY, 0]} friction={1} colliders={false}>
+        <CuboidCollider args={[halfExtent, 1, halfExtent]} />
       </RigidBody>
       <Grass />
       <ambientLight intensity={0.4} />
