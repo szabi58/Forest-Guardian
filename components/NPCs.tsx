@@ -97,8 +97,8 @@ const ExplodingChunks: React.FC<{ color: string; count?: number }> = ({ color, c
     )
 }
 
-// Visual effect for enemies killed by sword - splits them in half
-const DeadSplitModel: React.FC<{ isDead: boolean; killedBySword: boolean; children: React.ReactNode; yOffset?: number; }> = ({ isDead, killedBySword, children, yOffset = 0 }) => {
+// Visual effect for enemies killed by sword - splits them in half (skipped for TREX so they lay static)
+const DeadSplitModel: React.FC<{ isDead: boolean; killedBySword: boolean; noSplit?: boolean; children: React.ReactNode; yOffset?: number; }> = ({ isDead, killedBySword, noSplit, children, yOffset = 0 }) => {
     const leftGroupRef = useRef<THREE.Group>(null);
     const rightGroupRef = useRef<THREE.Group>(null);
     const splitProgress = useRef(0);
@@ -108,7 +108,7 @@ const DeadSplitModel: React.FC<{ isDead: boolean; killedBySword: boolean; childr
     const rightClipPlane = useMemo(() => new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0), []);
 
     useFrame((state, delta) => {
-        if (!isDead || !killedBySword) return;
+        if (!isDead || !killedBySword || noSplit) return;
         if (splitProgress.current < 1) {
             splitProgress.current += delta * 2;
             const p = Math.min(splitProgress.current, 1);
@@ -126,7 +126,7 @@ const DeadSplitModel: React.FC<{ isDead: boolean; killedBySword: boolean; childr
         if (node.children) { node.children.forEach((child: any) => applyClipping(child, plane)); }
     };
 
-    if (!isDead || !killedBySword) { return <>{children}</>; }
+    if (!isDead || !killedBySword || noSplit) { return <>{children}</>; }
     return (
         <group position={[0, yOffset, 0]}>
             <group ref={leftGroupRef} onAfterRender={() => applyClipping(leftGroupRef.current, leftClipPlane)}>{children}</group>
@@ -165,87 +165,235 @@ const SlimeModel: React.FC<HitReactionProps> = ({ flash, hitType, hitProgress })
   );
 };
 
-const TrexModel: React.FC<HitReactionProps & { isMoving: boolean }> = ({ isMoving, flash, hitType, hitProgress }) => {
+const WALK_LEG_SPEED = 5;
+const WALK_BOB_HEIGHT = 0.15;
+const TAIL_SWING_AMP = 0.4;
+const JAW_REST = 0.55;
+const JAW_OPEN = 0.95;
+const BITE_DURATION = 0.45;
+
+const TrexModel: React.FC<HitReactionProps & { isMoving: boolean; isAttacking?: boolean; isDead?: boolean }> = ({ isMoving, isAttacking = false, isDead = false, flash, hitType, hitProgress }) => {
   const groupRef = useRef<THREE.Group>(null);
   const headRef = useRef<THREE.Group>(null);
   const jawRef = useRef<THREE.Mesh>(null);
-  const tailRef = useRef<THREE.Mesh>(null);
+  const tailRef = useRef<THREE.Group>(null);
   const leftLegRef = useRef<THREE.Group>(null);
   const rightLegRef = useRef<THREE.Group>(null);
+  const attackStartTime = useRef(0);
+  const prevAttacking = useRef(false);
 
   useFrame((state) => {
-    const t = state.clock.elapsedTime;
-    
-    // Idle Animation
-    if (headRef.current) headRef.current.rotation.z = Math.sin(t * 1.5) * 0.05;
-    if (tailRef.current) tailRef.current.rotation.y = Math.cos(t * 1.5) * 0.1;
-    if (jawRef.current) jawRef.current.rotation.x = 0.2 + Math.sin(t * 3) * 0.05;
+    if (isDead) return;
 
-    // Movement Animation
-    if (isMoving) {
-        if (groupRef.current) groupRef.current.position.y = Math.abs(Math.sin(t * 6)) * 0.2;
-        if (leftLegRef.current) leftLegRef.current.rotation.x = Math.sin(t * 6) * 0.5;
-        if (rightLegRef.current) rightLegRef.current.rotation.x = Math.cos(t * 6) * 0.5;
-    } else {
-        if (groupRef.current) groupRef.current.position.y = 0;
-        if (leftLegRef.current) leftLegRef.current.rotation.x = 0;
-        if (rightLegRef.current) rightLegRef.current.rotation.x = 0;
+    const t = state.clock.elapsedTime;
+    const delta = state.clock.getDelta();
+
+    if (isAttacking && !prevAttacking.current) attackStartTime.current = t;
+    prevAttacking.current = isAttacking;
+
+    // Idle head sway
+    if (headRef.current) headRef.current.rotation.z = Math.sin(t * 1.2) * 0.04;
+
+    // Tail: swing when walking, subtle sway when idle
+    if (tailRef.current) {
+      if (isMoving) {
+        tailRef.current.rotation.y = Math.sin(t * WALK_LEG_SPEED) * TAIL_SWING_AMP;
+      } else {
+        tailRef.current.rotation.y = Math.sin(t * 1.5) * 0.08;
+      }
     }
 
-    // Hit Reaction
+    // Jaw: open/close during attack, else idle
+    if (jawRef.current) {
+      if (isAttacking) {
+        const elapsed = t - attackStartTime.current;
+        const p = Math.min(1, elapsed / BITE_DURATION);
+        const openPhase = 0.35;
+        let jawX: number;
+        if (p < openPhase) {
+          jawX = JAW_REST + (p / openPhase) * (JAW_OPEN - JAW_REST);
+        } else {
+          jawX = JAW_OPEN - ((p - openPhase) / (1 - openPhase)) * (JAW_OPEN - JAW_REST);
+        }
+        jawRef.current.rotation.x = jawX;
+      } else {
+        jawRef.current.rotation.x = JAW_REST + Math.sin(t * 2.5) * 0.04;
+      }
+    }
+
+    // Walking: body bob + alternating legs
+    if (isMoving) {
+      if (groupRef.current) groupRef.current.position.y = Math.abs(Math.sin(t * WALK_LEG_SPEED)) * WALK_BOB_HEIGHT;
+      if (leftLegRef.current) leftLegRef.current.rotation.x = Math.sin(t * WALK_LEG_SPEED) * 0.45;
+      if (rightLegRef.current) rightLegRef.current.rotation.x = Math.cos(t * WALK_LEG_SPEED) * 0.45;
+    } else {
+      if (groupRef.current) groupRef.current.position.y = 0;
+      if (leftLegRef.current) leftLegRef.current.rotation.x = 0;
+      if (rightLegRef.current) rightLegRef.current.rotation.x = 0;
+    }
+
     if (hitType && groupRef.current) {
-         groupRef.current.rotation.z = (Math.random() - 0.5) * 0.2 * hitProgress;
+      groupRef.current.rotation.z = (Math.random() - 0.5) * 0.2 * hitProgress;
     } else if (groupRef.current) {
-         groupRef.current.rotation.z = 0;
+      groupRef.current.rotation.z = 0;
     }
   });
 
-  const skinColor = flash ? "#ff0000" : "#3e2723"; // Dark brown
+  const skinColor = flash ? "#ff0000" : "#3d5c2e";
+  const bellyColor = flash ? "#ff4444" : "#8b9b7a";
+  const mat = { color: skinColor, roughness: 0.85 };
+  const bellyMat = { color: bellyColor, roughness: 0.9, side: THREE.DoubleSide as THREE.Side };
+  const clawMat = { color: "#f5f5f0" };
+  const toothMat = { color: "#f5f5f0" };
 
   return (
     <group ref={groupRef} scale={[1.8, 1.8, 1.8]}>
-        {/* Body */}
-        <mesh position={[0, 1.4, 0]} castShadow>
-            <boxGeometry args={[1.0, 1.2, 2.2]} />
-            <meshStandardMaterial color={skinColor} roughness={0.8} />
+        {/* Body - chest and hip as boxes with angled planes for mass */}
+        <mesh position={[0, 1.5, 0.35]} castShadow>
+            <boxGeometry args={[1.05, 1.0, 1.15]} />
+            <meshStandardMaterial {...mat} />
+        </mesh>
+        <mesh position={[0, 1.38, -0.55]} castShadow>
+            <boxGeometry args={[1.0, 1.05, 1.0]} />
+            <meshStandardMaterial {...mat} />
+        </mesh>
+        {/* Belly - flat angled plane for underside */}
+        <mesh position={[0, 1.08, 0]} rotation={[0.2, 0, 0]} castShadow>
+            <planeGeometry args={[0.9, 2.1]} />
+            <meshStandardMaterial {...bellyMat} />
         </mesh>
 
-        {/* Tail */}
-        <mesh ref={tailRef} position={[0, 1.4, -1.6]} rotation={[-0.2, 0, 0]} castShadow>
-            <coneGeometry args={[0.4, 1.5, 8]} rotation={[-Math.PI/2, 0, 0]} />
-            <meshStandardMaterial color={skinColor} roughness={0.8} />
-        </mesh>
-
-        {/* Neck & Head */}
-        <group ref={headRef} position={[0, 1.8, 1.2]}>
-            <mesh position={[0, 0.4, 0.4]} castShadow>
-                <boxGeometry args={[0.7, 0.8, 1.0]} />
-                <meshStandardMaterial color={skinColor} roughness={0.8} />
+        {/* Tail - tapered boxes + one cone for tip */}
+        <group ref={tailRef} position={[0, 1.4, -1.05]} rotation={[-0.12, 0, 0]}>
+            <mesh position={[0, 0, -0.3]} castShadow>
+                <boxGeometry args={[0.7, 0.75, 0.65]} />
+                <meshStandardMaterial {...mat} />
             </mesh>
-            {/* Jaw */}
-            <mesh ref={jawRef} position={[0, 0.1, 0.4]} rotation={[0.2, 0, 0]}>
-                 <boxGeometry args={[0.5, 0.2, 0.8]} />
-                 <meshStandardMaterial color="#2d1b15" />
+            <mesh position={[0, 0, -0.7]} castShadow>
+                <boxGeometry args={[0.55, 0.6, 0.55]} />
+                <meshStandardMaterial {...mat} />
             </mesh>
-            {/* Eyes */}
-            <mesh position={[-0.25, 0.6, 0.7]}><boxGeometry args={[0.1, 0.1, 0.1]} /><meshStandardMaterial color="#ffcc00" emissive="#ff0000" emissiveIntensity={0.5} /></mesh>
-            <mesh position={[0.25, 0.6, 0.7]}><boxGeometry args={[0.1, 0.1, 0.1]} /><meshStandardMaterial color="#ffcc00" emissive="#ff0000" emissiveIntensity={0.5} /></mesh>
+            <mesh position={[0, 0, -1.05]} castShadow>
+                <boxGeometry args={[0.4, 0.45, 0.5]} />
+                <meshStandardMaterial {...mat} />
+            </mesh>
+            <mesh position={[0, 0, -1.4]} castShadow>
+                <coneGeometry args={[0.22, 0.5, 4]} />
+                <meshStandardMaterial {...mat} />
+            </mesh>
         </group>
 
-        {/* Tiny Arms */}
-        <mesh position={[-0.4, 1.6, 0.8]} rotation={[0.5, 0.2, 0]}><boxGeometry args={[0.15, 0.4, 0.15]} /><meshStandardMaterial color={skinColor} /></mesh>
-        <mesh position={[0.4, 1.6, 0.8]} rotation={[0.5, -0.2, 0]}><boxGeometry args={[0.15, 0.4, 0.15]} /><meshStandardMaterial color={skinColor} /></mesh>
+        {/* Neck - two box segments */}
+        <group ref={headRef} position={[0, 1.78, 1.1]}>
+            <mesh position={[0, 0.12, 0.08]} rotation={[0.22, 0, 0]} castShadow>
+                <boxGeometry args={[0.6, 0.5, 0.5]} />
+                <meshStandardMaterial {...mat} />
+            </mesh>
+            <mesh position={[0, 0.32, 0.38]} rotation={[0.18, 0, 0]} castShadow>
+                <boxGeometry args={[0.55, 0.45, 0.48]} />
+                <meshStandardMaterial {...mat} />
+            </mesh>
 
-        {/* Legs */}
-        <group ref={leftLegRef} position={[-0.4, 0.8, 0]}>
-            <mesh position={[0, -0.4, 0]}><boxGeometry args={[0.35, 1.0, 0.4]} /><meshStandardMaterial color={skinColor} />
+            {/* Head - skull and snout boxes */}
+            <mesh position={[0, 0.52, 0.68]} castShadow>
+                <boxGeometry args={[0.62, 0.6, 0.58]} />
+                <meshStandardMaterial {...mat} />
             </mesh>
-            <mesh position={[0, -0.9, 0.1]}><boxGeometry args={[0.4, 0.2, 0.6]} /><meshStandardMaterial color="#1a110d" /></mesh>
+            <mesh position={[0, 0.4, 0.95]} rotation={[0.06, 0, 0]} castShadow>
+                <boxGeometry args={[0.48, 0.38, 0.5]} />
+                <meshStandardMaterial {...mat} />
+            </mesh>
+            <mesh position={[0, 0.26, 1.12]} rotation={[0.04, 0, 0]} castShadow>
+                <boxGeometry args={[0.32, 0.28, 0.32]} />
+                <meshStandardMaterial {...mat} />
+            </mesh>
+            {/* Brow ridges */}
+            <mesh position={[-0.28, 0.62, 0.8]} rotation={[0, 0, Math.PI / 6]}>
+                <boxGeometry args={[0.14, 0.1, 0.26]} />
+                <meshStandardMaterial {...mat} />
+            </mesh>
+            <mesh position={[0.28, 0.62, 0.8]} rotation={[0, 0, -Math.PI / 6]}>
+                <boxGeometry args={[0.14, 0.1, 0.26]} />
+                <meshStandardMaterial {...mat} />
+            </mesh>
+            {/* Upper teeth - cones only for teeth */}
+            {[-0.18, -0.09, 0, 0.09, 0.18].map((x, i) => (
+                <mesh key={i} position={[x, 0.04, 1.24]} rotation={[0.1, 0, 0]}>
+                    <coneGeometry args={[0.032, 0.1, 4]} />
+                    <meshStandardMaterial {...toothMat} />
+                </mesh>
+            ))}
+            {/* Lower jaw - two boxes */}
+            <mesh ref={jawRef} position={[0, -0.02, 0.52]} rotation={[0.55, 0, 0]} castShadow>
+                <boxGeometry args={[0.48, 0.2, 0.6]} />
+                <meshStandardMaterial {...mat} />
+            </mesh>
+            <mesh position={[0, -0.1, 0.8]} rotation={[0.5, 0, 0]} castShadow>
+                <boxGeometry args={[0.28, 0.14, 0.38]} />
+                <meshStandardMaterial {...mat} />
+            </mesh>
+            {/* Lower teeth */}
+            {[-0.16, -0.08, 0, 0.08, 0.16].map((x, i) => (
+                <mesh key={`l${i}`} position={[x, -0.2, 0.82]} rotation={[Math.PI - 0.32, 0, 0]}>
+                    <coneGeometry args={[0.028, 0.07, 4]} />
+                    <meshStandardMaterial {...toothMat} />
+                </mesh>
+            ))}
+            {/* Tongue */}
+            <mesh position={[0, 0.02, 0.78]} rotation={[0.28, 0, 0]}>
+                <boxGeometry args={[0.18, 0.06, 0.36]} />
+                <meshStandardMaterial color="#d46a6a" roughness={0.7} />
+            </mesh>
+            {/* Drool - thin boxes */}
+            <mesh position={[0.1, 0.08, 1.1]} rotation={[0.5, 0, 0]}>
+                <boxGeometry args={[0.02, 0.14, 0.02]} />
+                <meshStandardMaterial color="#e8e8e0" transparent opacity={0.9} />
+            </mesh>
+            <mesh position={[-0.1, 0.08, 1.08]} rotation={[0.5, 0, 0]}>
+                <boxGeometry args={[0.02, 0.12, 0.02]} />
+                <meshStandardMaterial color="#e8e8e0" transparent opacity={0.9} />
+            </mesh>
+            {/* Eyes - boxes for glowing red */}
+            <mesh position={[-0.22, 0.5, 0.92]}>
+                <boxGeometry args={[0.12, 0.12, 0.1]} />
+                <meshStandardMaterial color="#ff2222" emissive="#cc0000" emissiveIntensity={2} />
+            </mesh>
+            <mesh position={[0.22, 0.5, 0.92]}>
+                <boxGeometry args={[0.12, 0.12, 0.1]} />
+                <meshStandardMaterial color="#ff2222" emissive="#cc0000" emissiveIntensity={2} />
+            </mesh>
         </group>
-        <group ref={rightLegRef} position={[0.4, 0.8, 0]}>
-            <mesh position={[0, -0.4, 0]}><boxGeometry args={[0.35, 1.0, 0.4]} /><meshStandardMaterial color={skinColor} />
-            </mesh>
-             <mesh position={[0, -0.9, 0.1]}><boxGeometry args={[0.4, 0.2, 0.6]} /><meshStandardMaterial color="#1a110d" /></mesh>
+
+        {/* Arms - box + two claw boxes */}
+        <group position={[-0.42, 1.58, 0.72]} rotation={[0.5, 0.2, 0]}>
+            <mesh><boxGeometry args={[0.16, 0.32, 0.16]} /><meshStandardMaterial {...mat} /></mesh>
+            <mesh position={[0.04, -0.2, 0.04]}><boxGeometry args={[0.06, 0.08, 0.05]} /><meshStandardMaterial {...clawMat} /></mesh>
+            <mesh position={[-0.04, -0.22, 0.04]}><boxGeometry args={[0.05, 0.07, 0.05]} /><meshStandardMaterial {...clawMat} /></mesh>
+        </group>
+        <group position={[0.42, 1.58, 0.72]} rotation={[0.5, -0.2, 0]}>
+            <mesh><boxGeometry args={[0.16, 0.32, 0.16]} /><meshStandardMaterial {...mat} /></mesh>
+            <mesh position={[-0.04, -0.2, 0.04]}><boxGeometry args={[0.06, 0.08, 0.05]} /><meshStandardMaterial {...clawMat} /></mesh>
+            <mesh position={[0.04, -0.22, 0.04]}><boxGeometry args={[0.05, 0.07, 0.05]} /><meshStandardMaterial {...clawMat} /></mesh>
+        </group>
+
+        {/* Legs - thigh, calf, foot, toes as boxes */}
+        <group ref={leftLegRef} position={[-0.42, 0.82, 0]}>
+            <mesh position={[0, -0.38, 0]}><boxGeometry args={[0.38, 0.75, 0.4]} /><meshStandardMaterial {...mat} /></mesh>
+            <mesh position={[0, -0.78, 0.06]}><boxGeometry args={[0.32, 0.52, 0.36]} /><meshStandardMaterial {...mat} /></mesh>
+            <mesh position={[0, -1.04, 0.18]} rotation={[0.12, 0, 0]}><boxGeometry args={[0.3, 0.12, 0.48]} /><meshStandardMaterial {...mat} /></mesh>
+            <mesh position={[-0.11, -1.08, 0.24]} rotation={[0.18, 0, 0]}><boxGeometry args={[0.08, 0.1, 0.16]} /><meshStandardMaterial {...clawMat} /></mesh>
+            <mesh position={[0, -1.08, 0.26]} rotation={[0.18, 0, 0]}><boxGeometry args={[0.08, 0.1, 0.18]} /><meshStandardMaterial {...clawMat} /></mesh>
+            <mesh position={[0.11, -1.08, 0.24]} rotation={[0.18, 0, 0]}><boxGeometry args={[0.08, 0.1, 0.16]} /><meshStandardMaterial {...clawMat} /></mesh>
+            <mesh position={[0.18, -1.06, 0.12]} rotation={[0.12, 0, -0.15]}><boxGeometry args={[0.06, 0.08, 0.12]} /><meshStandardMaterial {...clawMat} /></mesh>
+        </group>
+        <group ref={rightLegRef} position={[0.42, 0.82, 0]}>
+            <mesh position={[0, -0.38, 0]}><boxGeometry args={[0.38, 0.75, 0.4]} /><meshStandardMaterial {...mat} /></mesh>
+            <mesh position={[0, -0.78, 0.06]}><boxGeometry args={[0.32, 0.52, 0.36]} /><meshStandardMaterial {...mat} /></mesh>
+            <mesh position={[0, -1.04, 0.18]} rotation={[0.12, 0, 0]}><boxGeometry args={[0.3, 0.12, 0.48]} /><meshStandardMaterial {...mat} /></mesh>
+            <mesh position={[-0.11, -1.08, 0.24]} rotation={[0.18, 0, 0]}><boxGeometry args={[0.08, 0.1, 0.16]} /><meshStandardMaterial {...clawMat} /></mesh>
+            <mesh position={[0, -1.08, 0.26]} rotation={[0.18, 0, 0]}><boxGeometry args={[0.08, 0.1, 0.18]} /><meshStandardMaterial {...clawMat} /></mesh>
+            <mesh position={[0.11, -1.08, 0.24]} rotation={[0.18, 0, 0]}><boxGeometry args={[0.08, 0.1, 0.16]} /><meshStandardMaterial {...clawMat} /></mesh>
+            <mesh position={[0.18, -1.06, 0.12]} rotation={[0.12, 0, -0.15]}><boxGeometry args={[0.06, 0.08, 0.12]} /><meshStandardMaterial {...clawMat} /></mesh>
         </group>
     </group>
   );
@@ -254,56 +402,118 @@ const TrexModel: React.FC<HitReactionProps & { isMoving: boolean }> = ({ isMovin
 const RabbitModel: React.FC<HitReactionProps & { isMoving: boolean }> = ({ isMoving, flash, hitType, hitProgress }) => {
   const groupRef = useRef<THREE.Group>(null);
   const feetRef = useRef<THREE.Group>(null);
+  const earsRef = useRef<THREE.Group>(null);
   const isHitStopping = useGameStore(s => s.isHitStopping);
 
   useFrame((state) => {
     if (isHitStopping) return;
     const t = state.clock.getElapsedTime();
     let targetXRot = 0;
-    if (isMoving) { 
-        if (groupRef.current) groupRef.current.position.y = Math.abs(Math.sin(t * 10)) * 0.8; 
-        targetXRot = Math.sin(t * 10) * 0.2; 
+    if (isMoving) {
+        const hopPhase = t * 6;
+        const hopUp = Math.max(0, Math.sin(hopPhase));
+        if (groupRef.current) {
+            groupRef.current.position.y = hopUp * 0.18;
+            groupRef.current.rotation.x = -hopUp * 0.15;
+        }
         if (feetRef.current) {
             feetRef.current.children.forEach((foot, i) => {
-                const offset = i * Math.PI * 0.5;
-                foot.position.y = -0.4 + Math.sin(t * 10 + offset) * 0.1;
-                foot.rotation.x = Math.sin(t * 10 + offset) * 0.3;
+                const offset = i * (Math.PI * 0.5);
+                const step = Math.sin(hopPhase + offset) * 0.5 + 0.5;
+                (foot as THREE.Mesh).position.y = -0.42 + step * 0.1;
+                (foot as THREE.Mesh).rotation.x = (step - 0.5) * 0.4;
             });
         }
+        if (earsRef.current) earsRef.current.rotation.z = Math.sin(t * 6) * 0.04;
     } else {
-        if (groupRef.current) groupRef.current.position.y = 0;
+        if (groupRef.current) {
+            groupRef.current.position.y = 0;
+            groupRef.current.rotation.x = THREE.MathUtils.lerp(groupRef.current.rotation.x, 0, 0.15);
+        }
         if (feetRef.current) {
             feetRef.current.children.forEach((foot) => {
-                foot.position.y = -0.5;
-                foot.rotation.x = 0;
+                (foot as THREE.Mesh).position.y = -0.44;
+                (foot as THREE.Mesh).rotation.x = 0;
             });
         }
+        if (earsRef.current) earsRef.current.rotation.z = 0;
     }
-
-    if (hitType === 'MELEE') { 
-      targetXRot -= Math.sin(hitProgress * Math.PI) * 1.5; 
-      if (groupRef.current) groupRef.current.position.z -= Math.sin(hitProgress * Math.PI) * 0.5;
+    if (hitType === 'MELEE') {
+      targetXRot -= Math.sin(hitProgress * Math.PI) * 1.2;
+      if (groupRef.current) groupRef.current.position.z -= Math.sin(hitProgress * Math.PI) * 0.35;
     }
-    if (groupRef.current) groupRef.current.rotation.x = THREE.MathUtils.lerp(groupRef.current.rotation.x, targetXRot, 0.2);
+    if (groupRef.current && !isMoving) groupRef.current.rotation.x = THREE.MathUtils.lerp(groupRef.current.rotation.x, targetXRot, 0.2);
   });
 
-  const furColor = flash ? "#ff0000" : (hitType === 'FIREBALL' ? "#3e2723" : "#b68c5e");
+  const fur = flash ? '#ff4444' : (hitType === 'FIREBALL' ? '#3e2723' : '#b8956e');
+  const belly = flash ? '#ff8888' : '#f8f4ee';
+  const earIn = flash ? '#ffaaaa' : '#e0c8b0';
+  const mat = (c: string) => <meshStandardMaterial color={c} roughness={0.88} metalness={0} />;
+
   return (
-    <group ref={groupRef} scale={[0.8, 0.8, 0.8]} position={[0, 0.5, 0]}>
-      <mesh castShadow><sphereGeometry args={[0.7, 16, 16]} /><meshToonMaterial color={furColor} /></mesh>
-      <group position={[0, 0.6, 0.35]}>
-          <mesh position={[-0.2, 0, 0]} rotation={[0.4, 0, 0]}><capsuleGeometry args={[0.1, 0.4, 4, 8]} /><meshToonMaterial color={furColor} /></mesh>
-          <mesh position={[0.2, 0, 0]} rotation={[0.4, 0, 0]}><capsuleGeometry args={[0.1, 0.4, 4, 8]} /><meshToonMaterial color={furColor} /></mesh>
+    <group ref={groupRef} scale={[1, 1, 1]} position={[0, 0.45, 0]}>
+      {/* Body — oval-ish (slightly squashed sphere), lower mass */}
+      <mesh position={[0, -0.05, 0]} castShadow receiveShadow>
+        <sphereGeometry args={[0.42, 16, 14]} />
+        {mat(fur)}
+      </mesh>
+      {/* Belly patch — front of body */}
+      <mesh position={[0, -0.08, 0.38]} castShadow>
+        <sphereGeometry args={[0.3, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshStandardMaterial color={belly} roughness={0.9} side={THREE.FrontSide} />
+      </mesh>
+      {/* Tail — fluffy ball at back */}
+      <mesh position={[0, 0.08, -0.4]} castShadow>
+        <sphereGeometry args={[0.14, 10, 8]} />
+        <meshStandardMaterial color={belly} roughness={0.9} />
+      </mesh>
+
+      {/* Head — distinct round head in front and above body */}
+      <group position={[0, 0.32, 0.28]}>
+        <mesh castShadow>
+          <sphereGeometry args={[0.32, 16, 14]} />
+          {mat(fur)}
+        </mesh>
+        {/* Snout — small rounded bump for nose/mouth area */}
+        <mesh position={[0, 0, 0.3]} castShadow>
+          <sphereGeometry args={[0.12, 10, 8]} />
+          {mat(fur)}
+        </mesh>
+        {/* Nose */}
+        <mesh position={[0, 0.02, 0.4]}>
+          <sphereGeometry args={[0.055, 8, 6]} />
+          <meshStandardMaterial color="#d49090" roughness={0.7} />
+        </mesh>
+
+        {/* Eyes — on the head, front-facing */}
+        <mesh position={[-0.12, 0.08, 0.28]}><sphereGeometry args={[0.08, 10, 8]} /><meshStandardMaterial color="#1a120c" roughness={0.4} /></mesh>
+        <mesh position={[-0.09, 0.11, 0.34]}><sphereGeometry args={[0.025, 6, 4]} /><meshStandardMaterial color="#fff" /></mesh>
+        <mesh position={[0.12, 0.08, 0.28]}><sphereGeometry args={[0.08, 10, 8]} /><meshStandardMaterial color="#1a120c" roughness={0.4} /></mesh>
+        <mesh position={[0.15, 0.11, 0.34]}><sphereGeometry args={[0.025, 6, 4]} /><meshStandardMaterial color="#fff" /></mesh>
+
+        {/* Ears — long and upright from top of head */}
+        <group ref={earsRef} position={[0, 0.28, -0.05]}>
+          <group position={[-0.1, 0.35, 0]} rotation={[0, 0, 0.05]}>
+            <mesh castShadow rotation={[-0.08, 0, 0]}><coneGeometry args={[0.08, 0.5, 10]} /><meshStandardMaterial color={fur} roughness={0.85} /></mesh>
+            <mesh position={[0, 0, 0.04]} rotation={[-0.08, 0, 0]}><coneGeometry args={[0.05, 0.42, 8]} /><meshStandardMaterial color={earIn} roughness={0.9} side={THREE.DoubleSide} /></mesh>
+          </group>
+          <group position={[0.1, 0.35, 0]} rotation={[0, 0, -0.05]}>
+            <mesh castShadow rotation={[-0.08, 0, 0]}><coneGeometry args={[0.08, 0.5, 10]} /><meshStandardMaterial color={fur} roughness={0.85} /></mesh>
+            <mesh position={[0, 0, 0.04]} rotation={[-0.08, 0, 0]}><coneGeometry args={[0.05, 0.42, 8]} /><meshStandardMaterial color={earIn} roughness={0.9} side={THREE.DoubleSide} /></mesh>
+          </group>
+        </group>
       </group>
-      <group position={[0, 0.2, 0.6]}>
-          <mesh position={[-0.2, 0, 0]}><sphereGeometry args={[0.08, 8, 8]} /><meshStandardMaterial color="#000" /></mesh>
-          <mesh position={[0.2, 0, 0]}><sphereGeometry args={[0.08, 8, 8]} /><meshStandardMaterial color="#000" /></mesh>
-      </group>
+
+      {/* Front paws — between head and body */}
+      <mesh position={[-0.12, 0.05, 0.35]} castShadow><sphereGeometry args={[0.09, 10, 8]} />{mat(fur)}</mesh>
+      <mesh position={[0.12, 0.05, 0.35]} castShadow><sphereGeometry args={[0.09, 10, 8]} />{mat(fur)}</mesh>
+
+      {/* Back feet — four pads under body */}
       <group ref={feetRef}>
-          <mesh position={[-0.3, -0.5, 0.2]}><sphereGeometry args={[0.15, 8, 8]} /><meshToonMaterial color={furColor} /></mesh>
-          <mesh position={[0.3, -0.5, 0.2]}><sphereGeometry args={[0.15, 8, 8]} /><meshToonMaterial color={furColor} /></mesh>
-          <mesh position={[-0.3, -0.5, -0.2]}><sphereGeometry args={[0.15, 8, 8]} /><meshToonMaterial color={furColor} /></mesh>
-          <mesh position={[0.3, -0.5, -0.2]}><sphereGeometry args={[0.15, 8, 8]} /><meshToonMaterial color={furColor} /></mesh>
+        <mesh position={[-0.18, -0.44, 0.18]} castShadow><sphereGeometry args={[0.1, 10, 8]} />{mat(fur)}</mesh>
+        <mesh position={[0.18, -0.44, 0.18]} castShadow><sphereGeometry args={[0.1, 10, 8]} />{mat(fur)}</mesh>
+        <mesh position={[-0.18, -0.44, -0.18]} castShadow><sphereGeometry args={[0.1, 10, 8]} />{mat(fur)}</mesh>
+        <mesh position={[0.18, -0.44, -0.18]} castShadow><sphereGeometry args={[0.1, 10, 8]} />{mat(fur)}</mesh>
       </group>
     </group>
   );
@@ -312,13 +522,16 @@ const RabbitModel: React.FC<HitReactionProps & { isMoving: boolean }> = ({ isMov
 // Individual NPC logic and controller
 const NPC: React.FC<{ data: EnemyData; playerRef: React.RefObject<THREE.Object3D> }> = ({ data, playerRef }) => {
   const rigidBodyRef = useRef<RapierRigidBody>(null);
+  const fallGroupRef = useRef<THREE.Group>(null);
+  const deathFallProgress = useRef(0);
   const [flash, setFlash] = useState(false);
   const [hitType, setHitType] = useState<'MELEE' | 'FIREBALL' | null>(null);
   const [hitProgress, setHitProgress] = useState(0);
   const lastHp = useRef(data.hp);
   const lastAttackTime = useRef(0);
-  const { damagePlayer, updateEnemyPosition } = useGameStore();
+  const { damagePlayer, updateEnemyPosition, consumeEnemyPushImpulse } = useGameStore();
   const [isMoving, setIsMoving] = useState(false);
+  const [isAttacking, setIsAttacking] = useState(false);
   const tempVec = useMemo(() => new THREE.Vector3(), []);
   const playerWorldPos = useMemo(() => new THREE.Vector3(), []);
 
@@ -339,15 +552,34 @@ const NPC: React.FC<{ data: EnemyData; playerRef: React.RefObject<THREE.Object3D
     }
     if (hitProgress === 0) setHitType(null);
 
-    if (!rigidBodyRef.current || data.isDead || !playerRef.current) return;
+    if (!rigidBodyRef.current || !playerRef.current) return;
 
     const rb = rigidBodyRef.current;
-    const pos = rb.translation();
-    
-    // CRITICAL FIX: Sync position back to store so the sword messenger can find it
-    if (state.clock.elapsedTime % 0.1 < 0.02) {
-        updateEnemyPosition(data.id, [pos.x, pos.y, pos.z]);
+
+    if (data.isDead) {
+      rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      rb.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      const doFallAndLayStatic = data.type === 'TREX' || (!data.killedBySword && !data.killedByKamehameha);
+      if (doFallAndLayStatic && fallGroupRef.current) {
+        deathFallProgress.current = Math.min(1, deathFallProgress.current + delta * 2.2);
+        const t = deathFallProgress.current;
+        const ease = 1 - Math.pow(1 - t, 2);
+        fallGroupRef.current.rotation.z = ease * (Math.PI / 2);
+      }
+      return;
     }
+
+    const pos = rb.translation();
+
+    // Apply guard push impulse (e.g. when hit by town guards at gate)
+    const impulse = consumeEnemyPushImpulse(data.id);
+    if (impulse) {
+      const vel = rb.linvel();
+      rb.setLinvel({ x: vel.x + impulse.vx, y: vel.y, z: vel.z + impulse.vz }, true);
+    }
+    
+    // Sync position to store every frame so gate guards (and sword) see current position
+    updateEnemyPosition(data.id, [pos.x, pos.y, pos.z]);
 
     playerRef.current.getWorldPosition(playerWorldPos);
     
@@ -371,9 +603,17 @@ const NPC: React.FC<{ data: EnemyData; playerRef: React.RefObject<THREE.Object3D
     const now = state.clock.elapsedTime;
     if (dist < 3.5 && now - lastAttackTime.current > 1.5) {
       lastAttackTime.current = now;
+      if (data.type === 'TREX') setIsAttacking(true);
       damagePlayer(data.type === 'TREX' ? 30 : 8);
     }
   });
+
+  // Clear attack state after bite animation duration
+  useEffect(() => {
+    if (!isAttacking) return;
+    const id = setTimeout(() => setIsAttacking(false), 450);
+    return () => clearTimeout(id);
+  }, [isAttacking]);
 
   const getBaseColor = (type: string) => {
       switch(type) {
@@ -393,7 +633,7 @@ const NPC: React.FC<{ data: EnemyData; playerRef: React.RefObject<THREE.Object3D
   }
 
   const renderModel = () => {
-    const props = { flash, hitType, hitProgress, isMoving };
+    const props = { flash, hitType, hitProgress, isMoving, isAttacking: data.type === 'TREX' ? isAttacking : false, isDead: !!data.isDead };
     switch (data.type) {
       case 'RABBIT': return <RabbitModel {...props} />;
       case 'SLIME': return <SlimeModel {...props} flash={flash} hitType={hitType} hitProgress={hitProgress} />;
@@ -412,9 +652,11 @@ const NPC: React.FC<{ data: EnemyData; playerRef: React.RefObject<THREE.Object3D
       enabledRotations={[false, true, false]}
     >
       {!data.isDead && <CuboidCollider args={[data.type === 'TREX' ? 1.5 : 0.5, 1, data.type === 'TREX' ? 1.5 : 0.5]} position={[0, 1, 0]} />}
-      <DeadSplitModel isDead={!!data.isDead} killedBySword={!!data.killedBySword}>
-        {renderModel()}
-      </DeadSplitModel>
+      <group ref={fallGroupRef}>
+        <DeadSplitModel isDead={!!data.isDead} killedBySword={!!data.killedBySword} noSplit={data.type === 'TREX'}>
+          {renderModel()}
+        </DeadSplitModel>
+      </group>
       <SparkBurst active={flash} color={hitType === 'FIREBALL' ? "#ffdd00" : "#ffffff"} />
     </RigidBody>
   );

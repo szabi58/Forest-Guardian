@@ -31,6 +31,7 @@ export const CameraController: React.FC<CameraControllerProps> = ({ playerRef })
   
   const currentPosition = useRef(new THREE.Vector3(0, 10, 10));
   const currentTarget = useRef(new THREE.Vector3(0, 0, 0));
+  const smoothedHeight = useRef(0);  // smoothed look-at height to eliminate vertical bounce when walking
   const tempVec = useRef(new THREE.Vector3());
   const rayOrigin = useRef(new THREE.Vector3());
   const rayDir = useRef(new THREE.Vector3());
@@ -41,11 +42,13 @@ export const CameraController: React.FC<CameraControllerProps> = ({ playerRef })
     BASE_DISTANCE: isInsideBuildingId ? 3.8 : 8.5,
     MIN_DISTANCE: 1.2,
     LOOK_AT_HEIGHT: 1.2,
-    ROTATION_SMOOTHING: 15, 
-    POSITION_SMOOTHING: 10,
-    SENSITIVITY_X: 18.0, 
+    ROTATION_SMOOTHING: 15,
+    POSITION_SMOOTHING: 8,
+    TARGET_SMOOTHING: 0.35,
+    HEIGHT_SMOOTHING: 0.04,  // Very slow vertical follow - removes walk bounce
+    SENSITIVITY_X: 18.0,
     SENSITIVITY_Y: 12.0,
-    FRICTION: 0.82, // Slightly less friction for better analog feel
+    FRICTION: 0.82,
     MIN_PITCH: -0.6,
     MAX_PITCH: 1.3,
   };
@@ -87,6 +90,10 @@ export const CameraController: React.FC<CameraControllerProps> = ({ playerRef })
     const playerPos = player.getWorldPosition(tempVec.current);
     if (!isValid(playerPos)) return;
 
+    const targetLookAtY = playerPos.y + CONFIG.LOOK_AT_HEIGHT;
+    if (smoothedHeight.current === 0) smoothedHeight.current = targetLookAtY;
+    smoothedHeight.current = THREE.MathUtils.lerp(smoothedHeight.current, targetLookAtY, CONFIG.HEIGHT_SMOOTHING);
+
     const finalYaw = player.rotation.y + currentYaw.current;
     const finalPitch = currentPitch.current;
 
@@ -99,8 +106,8 @@ export const CameraController: React.FC<CameraControllerProps> = ({ playerRef })
     if (backDir.lengthSq() < 0.0001) backDir.set(0, 0, 1);
     else backDir.normalize();
 
-    // 4. COLLISION DETECTION
-    rayOrigin.current.copy(playerPos).add(new THREE.Vector3(0, CONFIG.LOOK_AT_HEIGHT, 0));
+    // 4. COLLISION DETECTION (use smoothed height so camera doesn't bounce)
+    rayOrigin.current.set(playerPos.x, smoothedHeight.current, playerPos.z);
     rayDir.current.copy(backDir);
     
     let targetDistance = CONFIG.BASE_DISTANCE;
@@ -121,7 +128,7 @@ export const CameraController: React.FC<CameraControllerProps> = ({ playerRef })
     }
 
     const idealPosition = rayOrigin.current.clone().add(backDir.multiplyScalar(targetDistance));
-    const idealTarget = playerPos.clone().add(new THREE.Vector3(0, CONFIG.LOOK_AT_HEIGHT, 0));
+    const idealTarget = new THREE.Vector3(playerPos.x, smoothedHeight.current, playerPos.z);
 
     const terrainY = getTerrainHeight(idealPosition.x, idealPosition.z);
     if (isValid(terrainY)) {
@@ -132,7 +139,7 @@ export const CameraController: React.FC<CameraControllerProps> = ({ playerRef })
     const posChase = 1 - Math.exp(-CONFIG.POSITION_SMOOTHING * delta);
     if (isValid(posChase) && isValid(idealPosition) && isValid(idealTarget)) {
         currentPosition.current.lerp(idealPosition, posChase);
-        currentTarget.current.lerp(idealTarget, 0.5);
+        currentTarget.current.lerp(idealTarget, CONFIG.TARGET_SMOOTHING);
 
         const distSq = currentPosition.current.distanceToSquared(currentTarget.current);
         if (distSq > 0.001) {
@@ -153,11 +160,11 @@ export const CameraController: React.FC<CameraControllerProps> = ({ playerRef })
 
     const rawSpeed = store.currentSpeed || 0;
     const currentSpeed = Number.isFinite(rawSpeed) ? rawSpeed : 0;
-    const targetFOV = (isInsideBuildingId ? 78 : 58) + THREE.MathUtils.clamp(currentSpeed / 12, 0, 1) * 12;
+    const targetFOV = (isInsideBuildingId ? 78 : 58) + THREE.MathUtils.clamp(currentSpeed / 12, 0, 1) * 4;
     
     if (isValid(targetFOV) && (camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
         const pCam = camera as THREE.PerspectiveCamera;
-        pCam.fov = THREE.MathUtils.lerp(pCam.fov, targetFOV, 0.1);
+        pCam.fov = THREE.MathUtils.lerp(pCam.fov, targetFOV, 0.06);
         pCam.updateProjectionMatrix();
     }
   });

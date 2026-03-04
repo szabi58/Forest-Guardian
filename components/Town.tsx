@@ -1,7 +1,7 @@
 
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { RigidBody, RapierRigidBody, CuboidCollider, CylinderCollider } from '@react-three/rapier';
+import { RigidBody, RapierRigidBody, CuboidCollider, CylinderCollider, ConeCollider } from '@react-three/rapier';
 import { Billboard, Text, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { GoogleGenAI } from "@google/genai";
@@ -91,33 +91,6 @@ const FlowerBox: React.FC<{ position: [number, number, number]; rotation?: [numb
                 </mesh>
             ))}
         </group>
-    );
-};
-
-const ClimbingIvy: React.FC<{ height: number; width: number }> = ({ height, width }) => {
-    const ivyRef = useRef<THREE.InstancedMesh>(null);
-    const count = 30;
-    const dummy = useMemo(() => new THREE.Object3D(), []);
-
-    useEffect(() => {
-        if (! ivyRef.current) return;
-        for (let i = 0; i < count; i++) {
-            const x = (Math.random() - 0.5) * width;
-            const y = Math.random() * height;
-            dummy.position.set(x, y, 0.05);
-            dummy.rotation.set(0, 0, Math.random() * Math.PI);
-            dummy.scale.setScalar(0.2 + Math.random() * 0.4);
-            dummy.updateMatrix();
-            ivyRef.current.setMatrixAt(i, dummy.matrix);
-        }
-        ivyRef.current.instanceMatrix.needsUpdate = true;
-    }, [count, height, width]);
-
-    return (
-        <instancedMesh ref={ivyRef} args={[undefined, undefined, count]} frustumCulled={false} raycast={() => null}>
-            <planeGeometry args={[0.5, 0.5]} />
-            <meshStandardMaterial color="#2d5a27" side={THREE.DoubleSide} alphaTest={0.5} transparent />
-        </instancedMesh>
     );
 };
 
@@ -250,7 +223,6 @@ const BuildingWalls: React.FC<{ width: number, height: number, depth: number }> 
         <group position={[0, height / 2, 0]}>
             <group position={[0, 0, -depth / 2]}>
                 <mesh><boxGeometry args={[width, height, 0.5]} /><meshStandardMaterial color="#5d4037" roughness={0.9} /></mesh>
-                <ClimbingIvy height={height} width={width} />
             </group>
             <mesh position={[-width / 2, 0, 0]}><boxGeometry args={[0.5, height, depth]} /><meshStandardMaterial color="#5d4037" roughness={0.9} /></mesh>
             <mesh position={[width / 2, 0, 0]}><boxGeometry args={[0.5, height, depth]} /><meshStandardMaterial color="#5d4037" roughness={0.9} /></mesh>
@@ -446,8 +418,17 @@ const Building: React.FC<{ data: BuildingData, playerRef: React.RefObject<THREE.
                     <CuboidCollider args={[0.25, wallHeight / 2, wallWidth / 2]} position={[wallWidth / 2, wallHeight / 2, 0]} />
                     <CuboidCollider args={[1.0, wallHeight / 2, 0.25]} position={[-4.0, wallHeight / 2, wallWidth / 2]} />
                     <CuboidCollider args={[1.0, wallHeight / 2, 0.25]} position={[4.0, wallHeight / 2, wallWidth / 2]} />
-                    {/* Roof collider so the player can stand on top of buildings */}
-                    <CuboidCollider args={[wallWidth / 2, 0.25, wallWidth / 2]} position={[0, wallHeight + 0.25, 0]} />
+                    {/* Flat roof collider so the player can stand on top of buildings */}
+                    <CuboidCollider args={[wallWidth / 2, 0.25, wallWidth / 2]} position={[0, wallHeight + 0.25, 0]} friction={0} />
+                    {/* Triangular roof: single cone collider (no ridges) so player can walk and jump off without getting stuck */}
+                    {!isLibrary && !isClinic && (
+                        <ConeCollider
+                            args={[2.5, wallWidth * 0.9]}
+                            position={[0, wallHeight + 2 + 2.5, 0]}
+                            rotation={[0, Math.PI / 4, 0]}
+                            friction={0}
+                        />
+                    )}
                 </group>
             </RigidBody>
             
@@ -624,92 +605,137 @@ const PathNetwork: React.FC = () => {
     );
 };
 
-// --- SPLINE-BASED FENCE SYSTEM ---
+// --- STONE WALL FENCE WITH TORCHES (connected stone, 1/4 torches, 2x height) ---
+
+const WALL_HEIGHT = 2.2;
+const WALL_THICKNESS = 0.675;
+/** Barrier height so enemies cannot jump or be pushed over the fence; gates remain the only entrance. */
+const FENCE_BARRIER_HEIGHT = 4;
+const TORCH_SPACING = 48;
+const POST_HEIGHT_ABOVE_WALL = 0.85;
+
+const FenceTorch: React.FC<{ position: [number, number, number]; rotationY: number }> = ({ position, rotationY }) => {
+    const postTotalHeight = WALL_HEIGHT + POST_HEIGHT_ABOVE_WALL;
+    const postCenterY = (POST_HEIGHT_ABOVE_WALL - WALL_HEIGHT) / 2;
+    const torchPoleY = POST_HEIGHT_ABOVE_WALL + 0.55;
+    const flameBaseY = POST_HEIGHT_ABOVE_WALL + 1.25;
+    const flameGroupRef = useRef<THREE.Group>(null);
+    const flameOuterRef = useRef<THREE.Mesh>(null);
+    const flameInnerRef = useRef<THREE.Mesh>(null);
+    const seed = useRef(Math.random() * 1000).current;
+
+    useFrame((state) => {
+        const t = state.clock.elapsedTime + seed;
+        if (flameGroupRef.current) {
+            const flicker = 1 + Math.sin(t * 18) * 0.06 + Math.sin(t * 31) * 0.04;
+            const sway = Math.sin(t * 8) * 0.03;
+            flameGroupRef.current.scale.set(flicker, flicker * (1 + Math.sin(t * 12) * 0.05), flicker);
+            flameGroupRef.current.position.x = sway;
+            flameGroupRef.current.position.z = Math.cos(t * 7) * 0.02;
+            flameGroupRef.current.rotation.z = Math.sin(t * 6) * 0.04;
+        }
+        if (flameOuterRef.current?.material && flameOuterRef.current.material instanceof THREE.MeshStandardMaterial) {
+            flameOuterRef.current.material.emissiveIntensity = 2 + Math.sin(t * 14) * 0.5;
+        }
+        if (flameInnerRef.current?.material && flameInnerRef.current.material instanceof THREE.MeshBasicMaterial) {
+            flameInnerRef.current.opacity = 0.75 + Math.sin(t * 10) * 0.15;
+        }
+    });
+
+    return (
+        <group position={position} rotation={[0, rotationY, 0]}>
+            {/* Thick wood post: through wall, into ground, consistent amount above wall top (20% thicker) */}
+            <mesh castShadow receiveShadow position={[0, postCenterY, 0]}>
+                <cylinderGeometry args={[0.456, 0.504, postTotalHeight, 8]} />
+                <meshStandardMaterial color="#6b4423" roughness={0.85} />
+            </mesh>
+            {/* Torch pole */}
+            <mesh castShadow position={[0, torchPoleY, 0]}>
+                <cylinderGeometry args={[0.08, 0.1, 1.1, 8]} />
+                <meshStandardMaterial color="#5c4033" roughness={0.8} />
+            </mesh>
+            {/* Animated fire: outer and inner layer */}
+            <group ref={flameGroupRef} position={[0, flameBaseY, 0]}>
+                <mesh ref={flameOuterRef} castShadow>
+                    <coneGeometry args={[0.22, 0.4, 12]} />
+                    <meshStandardMaterial color="#ff6600" emissive="#ff4400" emissiveIntensity={2} transparent opacity={0.92} />
+                </mesh>
+                <mesh ref={flameInnerRef}>
+                    <coneGeometry args={[0.1, 0.28, 8]} />
+                    <meshBasicMaterial color="#ffcc00" transparent opacity={0.8} depthWrite={false} />
+                </mesh>
+            </group>
+        </group>
+    );
+};
+
+const MIN_SEGMENT_LENGTH = 4;
 
 const Fence: React.FC<{ controlPoints: [number, number][] }> = ({ controlPoints }) => {
-    const postsRef = useRef<THREE.InstancedMesh>(null);
-    const railsRef = useRef<THREE.InstancedMesh>(null);
-    const railCountPerSegment = 2; // Two horizontal rails
-    
-    const { segments } = useMemo(() => {
+    const { segments, torchPositions } = useMemo(() => {
         const points = controlPoints.map(p => new THREE.Vector3(p[0], 0, p[1]));
-        const curve = new THREE.CatmullRomCurve3(points, false); // Opened segments
-        
-        const divisions = 40;
+        const curve = new THREE.CatmullRomCurve3(points, false);
+        const totalLength = curve.getLength();
+        const divisions = Math.max(2, Math.min(48, Math.ceil(totalLength / MIN_SEGMENT_LENGTH)));
         const sampledPoints = curve.getPoints(divisions);
-        
         const finalSegments: { p1: THREE.Vector3; p2: THREE.Vector3; center: THREE.Vector3; rotation: THREE.Euler; length: number }[] = [];
-        
+
         for (let i = 0; i < sampledPoints.length - 1; i++) {
             const p1 = sampledPoints[i].clone();
             const p2 = sampledPoints[i + 1].clone();
-            
             p1.y = getTerrainHeight(p1.x, p1.z);
             p2.y = getTerrainHeight(p2.x, p2.z);
-            
             const dir = new THREE.Vector3().subVectors(p2, p1);
             const length = dir.length();
             const center = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
-            
             const dummy = new THREE.Object3D();
             dummy.position.copy(p1);
             dummy.lookAt(p2);
-            
-            finalSegments.push({
-                p1, p2, center, length, rotation: dummy.rotation.clone()
-            });
+            finalSegments.push({ p1, p2, center, length, rotation: dummy.rotation.clone() });
         }
-        
-        return { segments: finalSegments };
-    }, [controlPoints]);
 
-    useEffect(() => {
-        const postDummy = new THREE.Object3D();
-        const railDummy = new THREE.Object3D();
-        
-        segments.forEach((seg, i) => {
-            postDummy.position.copy(seg.p1).add(new THREE.Vector3(0, 1.0, 0));
-            postDummy.updateMatrix();
-            postsRef.current?.setMatrixAt(i, postDummy.matrix);
-            
-            for (let r = 0; r < railCountPerSegment; r++) {
-                const railYOffset = 0.6 + (r * 0.8);
-                railDummy.position.copy(seg.center).add(new THREE.Vector3(0, railYOffset, 0));
-                railDummy.rotation.copy(seg.rotation);
-                railDummy.scale.set(1, 1, seg.length);
-                railDummy.updateMatrix();
-                railsRef.current?.setMatrixAt(i * railCountPerSegment + r, railDummy.matrix);
+        const torchList: { pos: [number, number, number]; rotY: number }[] = [];
+        finalSegments.forEach((seg) => {
+            for (let t = 0; t < seg.length; t += TORCH_SPACING) {
+                const f = Math.min(1, t / seg.length);
+                const x = seg.p1.x + (seg.p2.x - seg.p1.x) * f;
+                const z = seg.p1.z + (seg.p2.z - seg.p1.z) * f;
+                const y = (seg.p1.y + seg.p2.y) * 0.5 + WALL_HEIGHT;
+                torchList.push({ pos: [x, y, z], rotY: Math.atan2(seg.p2.x - seg.p1.x, seg.p2.z - seg.p1.z) });
             }
         });
-        
-        if (segments.length > 0) {
-            const lastSeg = segments[segments.length - 1];
-            postDummy.position.copy(lastSeg.p2).add(new THREE.Vector3(0, 1.0, 0));
-            postDummy.updateMatrix();
-            postsRef.current?.setMatrixAt(segments.length, postDummy.matrix);
-        }
-        
-        if (postsRef.current) postsRef.current.instanceMatrix.needsUpdate = true;
-        if (railsRef.current) railsRef.current.instanceMatrix.needsUpdate = true;
-    }, [segments]);
+
+        return { segments: finalSegments, torchPositions: torchList };
+    }, [controlPoints]);
 
     return (
         <group>
-            <instancedMesh ref={postsRef} args={[undefined, undefined, segments.length + 1]} castShadow receiveShadow frustumCulled={false} raycast={() => null}>
-                <boxGeometry args={[0.4, 2, 0.4]} />
-                <meshStandardMaterial color="#3e2723" roughness={0.9} />
-            </instancedMesh>
-            <instancedMesh ref={railsRef} args={[undefined, undefined, segments.length * railCountPerSegment]} castShadow receiveShadow frustumCulled={false} raycast={() => null}>
-                <boxGeometry args={[0.2, 0.3, 1]} />
-                <meshStandardMaterial color="#3e2723" roughness={0.9} />
-            </instancedMesh>
+            {segments.map((seg, i) => {
+                const baseY = (seg.p1.y + seg.p2.y) * 0.5;
+                return (
+                    <group key={i} position={[seg.center.x, baseY + WALL_HEIGHT / 2, seg.center.z]} rotation={[seg.rotation.x, seg.rotation.y, seg.rotation.z]}>
+                        <mesh castShadow receiveShadow>
+                            <boxGeometry args={[WALL_THICKNESS, WALL_HEIGHT, seg.length]} />
+                            <meshStandardMaterial color="#6e6e6e" roughness={0.95} />
+                        </mesh>
+                    </group>
+                );
+            })}
+
+            {torchPositions.map((t, i) => (
+                <FenceTorch key={i} position={t.pos} rotationY={t.rotY} />
+            ))}
 
             <RigidBody type="fixed" colliders={false}>
-                {segments.map((seg, i) => (
-                    <group key={i} position={[seg.center.x, seg.center.y + 1, seg.center.z]} rotation={[seg.rotation.x, seg.rotation.y, seg.rotation.z]}>
-                        <CuboidCollider args={[0.1, 1, seg.length / 2]} />
-                    </group>
-                ))}
+                {segments.map((seg, i) => {
+                    const baseY = seg.center.y;
+                    const barrierHalfH = FENCE_BARRIER_HEIGHT / 2;
+                    return (
+                        <group key={i} position={[seg.center.x, baseY + barrierHalfH, seg.center.z]} rotation={[seg.rotation.x, seg.rotation.y, seg.rotation.z]}>
+                            <CuboidCollider args={[WALL_THICKNESS / 2, barrierHalfH, seg.length / 2]} />
+                        </group>
+                    );
+                })}
             </RigidBody>
         </group>
     );
@@ -741,6 +767,189 @@ const GatePost: React.FC<{ position: [number, number] }> = ({ position }) => {
                     <meshStandardMaterial color="#ffd54f" emissive="#ffd54f" emissiveIntensity={5} transparent opacity={0.8} />
                 </mesh>
             </group>
+        </group>
+    );
+};
+
+// Stone entrance arch at path exits (facing: 0 = +Z, Math.PI = -Z)
+const EntranceArch: React.FC<{ position: [number, number]; rotation: number }> = ({ position, rotation }) => {
+    const y = getTerrainHeight(position[0], position[1]);
+    const gateWidth = 5;
+    const pillarW = 1.2;
+    const pillarH = 4.5;
+    const archHeight = 5.2;
+    return (
+        <group position={[position[0], y, position[1]]} rotation={[0, rotation, 0]}>
+            <RigidBody type="fixed" colliders={false}>
+                <CuboidCollider args={[pillarW / 2 + 0.5, pillarH / 2, gateWidth / 2 + 0.5]} position={[-gateWidth / 2 - pillarW / 2, pillarH / 2, 0]} />
+                <CuboidCollider args={[pillarW / 2 + 0.5, pillarH / 2, gateWidth / 2 + 0.5]} position={[gateWidth / 2 + pillarW / 2, pillarH / 2, 0]} />
+                <CuboidCollider args={[gateWidth / 2 + pillarW, 0.4, 1.5]} position={[0, archHeight, 0]} />
+            </RigidBody>
+            {/* Left pillar - stone */}
+            <mesh castShadow receiveShadow position={[-gateWidth / 2 - pillarW / 2, pillarH / 2, 0]}>
+                <boxGeometry args={[pillarW, pillarH, pillarW * 1.2]} />
+                <meshStandardMaterial color="#5a4a42" roughness={0.85} />
+            </mesh>
+            <mesh castShadow position={[-gateWidth / 2 - pillarW / 2, pillarH + 0.15, 0]}>
+                <boxGeometry args={[pillarW * 1.15, 0.2, pillarW * 1.35]} />
+                <meshStandardMaterial color="#3e2723" roughness={0.9} />
+            </mesh>
+            {/* Right pillar */}
+            <mesh castShadow receiveShadow position={[gateWidth / 2 + pillarW / 2, pillarH / 2, 0]}>
+                <boxGeometry args={[pillarW, pillarH, pillarW * 1.2]} />
+                <meshStandardMaterial color="#5a4a42" roughness={0.85} />
+            </mesh>
+            <mesh castShadow position={[gateWidth / 2 + pillarW / 2, pillarH + 0.15, 0]}>
+                <boxGeometry args={[pillarW * 1.15, 0.2, pillarW * 1.35]} />
+                <meshStandardMaterial color="#3e2723" roughness={0.9} />
+            </mesh>
+            {/* Arched top - curved arch made of segments */}
+            <group position={[0, archHeight, 0]}>
+                {/* Center keystone / arch cap */}
+                <mesh castShadow position={[0, 0.35, 0]}>
+                    <boxGeometry args={[gateWidth + pillarW * 1.5, 0.6, 1.8]} />
+                    <meshStandardMaterial color="#4a3f38" roughness={0.85} />
+                </mesh>
+                {/* Curved arch (simplified as angled blocks) */}
+                <mesh castShadow position={[-gateWidth / 2 - 0.3, 0.15, 0]} rotation={[0, 0, 0.25]}>
+                    <boxGeometry args={[1.4, 0.5, 1.6]} />
+                    <meshStandardMaterial color="#5a4a42" roughness={0.85} />
+                </mesh>
+                <mesh castShadow position={[gateWidth / 2 + 0.3, 0.15, 0]} rotation={[0, 0, -0.25]}>
+                    <boxGeometry args={[1.4, 0.5, 1.6]} />
+                    <meshStandardMaterial color="#5a4a42" roughness={0.85} />
+                </mesh>
+            </group>
+            {/* Decorative cap on top of arch */}
+            <mesh castShadow position={[0, archHeight + 0.7, 0]}>
+                <boxGeometry args={[gateWidth + pillarW * 2, 0.35, 2.2]} />
+                <meshStandardMaterial color="#3e2723" roughness={0.9} />
+            </mesh>
+        </group>
+    );
+};
+
+// Guard Pikachu at gate: moves toward enemies in range, attacks in melee with spear
+const GUARD_ATTACK_RADIUS = 16;
+const GUARD_MELEE_RANGE = 5;
+const GUARD_MAX_DISTANCE_FROM_POST = 18;
+const GUARD_SPEED = 6;
+const GUARD_DAMAGE = 24;
+const GUARD_DAMAGE_COOLDOWN = 0.7;
+const GUARD_PUSH_COOLDOWN = 0.35;
+const pushAwayXWest = -14;
+const pushAwayXEast = 14;
+
+const GateGuard: React.FC<{ position: [number, number]; gateSide: 'west' | 'east' }> = ({ position, gateSide }) => {
+    const homeX = position[0];
+    const homeZ = position[1];
+    const pushAwayX = gateSide === 'west' ? pushAwayXWest : pushAwayXEast;
+    const groupRef = useRef<THREE.Group>(null);
+    const posX = useRef(homeX);
+    const posZ = useRef(homeZ);
+    const isWalkingRef = useRef(false);
+    const [isWalking, setIsWalking] = useState(false);
+    const [spearSwingStartTime, setSpearSwingStartTime] = useState<number | null>(null);
+    const enemies = useGameStore(s => s.enemies);
+    const damageEnemy = useGameStore(s => s.damageEnemy);
+    const setEnemyPushImpulse = useGameStore(s => s.setEnemyPushImpulse);
+    const lastHit = useRef<Record<string, number>>({});
+    const lastPush = useRef<Record<string, number>>({});
+
+    useFrame((state, delta) => {
+        const now = state.clock.elapsedTime;
+        const gx = posX.current;
+        const gz = posZ.current;
+
+        const liveInRange: { e: typeof enemies[0]; dist: number; dx: number; dz: number }[] = [];
+        enemies.forEach((e) => {
+            if (e.isDead) return;
+            const [ex, , ez] = e.position;
+            const dx = ex - gx;
+            const dz = ez - gz;
+            const distSq = dx * dx + dz * dz;
+            if (distSq <= GUARD_ATTACK_RADIUS * GUARD_ATTACK_RADIUS) {
+                liveInRange.push({ e, dist: Math.sqrt(distSq), dx, dz });
+            }
+        });
+
+        const nearest = liveInRange.length > 0
+            ? liveInRange.reduce((a, b) => a.dist < b.dist ? a : b)
+            : null;
+
+        if (nearest) {
+            const inMelee = nearest.dist < GUARD_MELEE_RANGE;
+            if (inMelee) {
+                if (now - (lastHit.current[nearest.e.id] ?? 0) >= GUARD_DAMAGE_COOLDOWN) {
+                    lastHit.current[nearest.e.id] = now;
+                    damageEnemy(nearest.e.id, GUARD_DAMAGE, 'GENERIC');
+                    setSpearSwingStartTime(now);
+                }
+                if (now - (lastPush.current[nearest.e.id] ?? 0) >= GUARD_PUSH_COOLDOWN) {
+                    lastPush.current[nearest.e.id] = now;
+                    setEnemyPushImpulse(nearest.e.id, pushAwayX, 0);
+                }
+                if (isWalkingRef.current) {
+                    isWalkingRef.current = false;
+                    setIsWalking(false);
+                }
+            } else {
+                const distFromHome = Math.sqrt((gx - homeX) ** 2 + (gz - homeZ) ** 2);
+                if (distFromHome < GUARD_MAX_DISTANCE_FROM_POST) {
+                    const dirX = nearest.dx / nearest.dist;
+                    const dirZ = nearest.dz / nearest.dist;
+                    posX.current += dirX * GUARD_SPEED * delta;
+                    posZ.current += dirZ * GUARD_SPEED * delta;
+                    if (!isWalkingRef.current) {
+                        isWalkingRef.current = true;
+                        setIsWalking(true);
+                    }
+                }
+            }
+        } else {
+            const dxHome = homeX - gx;
+            const dzHome = homeZ - gz;
+            const distHome = Math.sqrt(dxHome * dxHome + dzHome * dzHome);
+            if (distHome > 0.3) {
+                const dirX = dxHome / distHome;
+                const dirZ = dzHome / distHome;
+                const step = Math.min(GUARD_SPEED * delta, distHome);
+                posX.current += dirX * step;
+                posZ.current += dirZ * step;
+                if (!isWalkingRef.current) {
+                    isWalkingRef.current = true;
+                    setIsWalking(true);
+                }
+            } else {
+                posX.current = homeX;
+                posZ.current = homeZ;
+                if (isWalkingRef.current) {
+                    isWalkingRef.current = false;
+                    setIsWalking(false);
+                }
+            }
+        }
+
+        if (groupRef.current) {
+            const y = getTerrainHeight(posX.current, posZ.current);
+            groupRef.current.position.set(posX.current, y, posZ.current);
+            if (nearest && nearest.dist < GUARD_MELEE_RANGE) {
+                groupRef.current.rotation.y = Math.atan2(-nearest.dx, -nearest.dz);
+            } else if (nearest) {
+                groupRef.current.rotation.y = Math.atan2(nearest.dx, nearest.dz);
+            } else {
+                const dxHome = homeX - posX.current;
+                const dzHome = homeZ - posZ.current;
+                if (dxHome * dxHome + dzHome * dzHome > 0.01) {
+                    groupRef.current.rotation.y = Math.atan2(dxHome, dzHome);
+                }
+            }
+        }
+    });
+
+    return (
+        <group ref={groupRef} position={[homeX, getTerrainHeight(homeX, homeZ), homeZ]} rotation={[0, gateSide === 'west' ? Math.PI / 2 : -Math.PI / 2, 0]}>
+            <PikachuModel color="#F5D000" flash={false} talking={false} isWalking={isWalking} outfit="GLADIATOR" spearSwingStartTime={spearSwingStartTime ?? undefined} />
         </group>
     );
 };
@@ -911,7 +1120,9 @@ const HeartParticles: React.FC<{ active: boolean }> = ({ active }) => {
 };
 
 // Pikachu-inspired Forest NPC Model
-const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean; isWalking?: boolean; outfit?: 'NONE' | 'MAYOR' | 'NURSE' }> = ({ color = "#F5D000", flash, talking, isWalking = false, outfit = 'NONE' }) => {
+const SPEAR_SWING_DURATION = 0.4;
+
+const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean; isWalking?: boolean; outfit?: 'NONE' | 'MAYOR' | 'NURSE' | 'SAGE' | 'BLACKSMITH' | 'GLADIATOR'; spearSwingStartTime?: number | null }> = ({ color = "#F5D000", flash, talking, isWalking = false, outfit = 'NONE', spearSwingStartTime }) => {
     const groupRef = useRef<THREE.Group>(null);
     const bodyRef = useRef<THREE.Group>(null);
     const headRef = useRef<THREE.Group>(null);
@@ -929,7 +1140,10 @@ const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean;
         const red = new THREE.MeshToonMaterial({ color: "#EE3630" });
         const white = new THREE.MeshToonMaterial({ color: "#FFFFFF" });
         const brown = new THREE.MeshToonMaterial({ color: "#7B5C35" });
-        return { yellow, black, red, white, brown };
+        const beard = new THREE.MeshToonMaterial({ color: "#1a1816" });
+        const bronze = new THREE.MeshToonMaterial({ color: "#8b6914", metalness: 0.6, roughness: 0.4 });
+        const bronzeDark = new THREE.MeshToonMaterial({ color: "#5c4a0f", metalness: 0.5, roughness: 0.5 });
+        return { yellow, black, red, white, brown, beard, bronze, bronzeDark };
     }, [flash]);
 
     useFrame((state) => {
@@ -944,7 +1158,13 @@ const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean;
         if (leftEarRef.current) leftEarRef.current.rotation.z = 0.5 + Math.sin(t * 3) * 0.05;
         if (rightEarRef.current) rightEarRef.current.rotation.z = -0.5 - Math.cos(t * 3) * 0.05;
 
-        // Walking Animation
+        // Spear attack (guards): override right arm with thrust when swinging
+        const spearProgress = spearSwingStartTime != null && spearSwingStartTime > 0
+            ? Math.max(0, 1 - (t - spearSwingStartTime) / SPEAR_SWING_DURATION)
+            : 0;
+        const isSpearSwinging = outfit === 'GLADIATOR' && spearProgress > 0;
+
+        // Walking Animation (skip right arm when spear swinging)
         if (isWalking) {
             if (groupRef.current) {
                 groupRef.current.position.y = 0.5 + Math.abs(Math.sin(t * 12)) * 0.1;
@@ -953,16 +1173,27 @@ const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean;
             if (leftLegRef.current) leftLegRef.current.rotation.x = Math.sin(t * 12) * 0.8;
             if (rightLegRef.current) rightLegRef.current.rotation.x = Math.cos(t * 12) * 0.8;
             if (leftArmRef.current) leftArmRef.current.rotation.x = -Math.cos(t * 12) * 0.8;
-            if (rightArmRef.current) rightArmRef.current.rotation.x = -Math.sin(t * 12) * 0.8;
+            if (!isSpearSwinging && rightArmRef.current) rightArmRef.current.rotation.x = -Math.sin(t * 12) * 0.8;
         } else {
             if (groupRef.current) {
-                groupRef.current.position.y = 0.5;
-                groupRef.current.rotation.z = 0;
+                if (outfit === 'GLADIATOR') {
+                    groupRef.current.position.y = 0.5 + Math.sin(t * 4) * 0.025;
+                    groupRef.current.rotation.z = Math.cos(t * 3) * 0.03;
+                } else {
+                    groupRef.current.position.y = 0.5;
+                    groupRef.current.rotation.z = 0;
+                }
             }
             if (leftLegRef.current) leftLegRef.current.rotation.x = 0;
             if (rightLegRef.current) rightLegRef.current.rotation.x = 0;
             if (leftArmRef.current) leftArmRef.current.rotation.x = 0;
-            if (rightArmRef.current) rightArmRef.current.rotation.x = 0;
+            if (!isSpearSwinging && rightArmRef.current) rightArmRef.current.rotation.x = 0;
+        }
+
+        if (isSpearSwinging && rightArmRef.current) {
+            const swing = Math.sin(spearProgress * Math.PI);
+            rightArmRef.current.rotation.x = -0.5 - swing * 1.15;
+            rightArmRef.current.rotation.y = swing * 0.15;
         }
 
         // Talking Animation
@@ -999,13 +1230,28 @@ const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean;
                 )}
 
                 {/* Back Stripes (Only if not wearing nurse outfit covering back) */}
-                {outfit !== 'NURSE' && (
+                {outfit !== 'NURSE' && outfit !== 'GLADIATOR' && (
                     <>
                         <mesh position={[0, 0.1, -0.32]} rotation={[0.2, 0, 0]} material={materials.brown}>
                             <boxGeometry args={[0.4, 0.05, 0.05]} />
                         </mesh>
                         <mesh position={[0, -0.1, -0.33]} rotation={[0, 0, 0]} material={materials.brown}>
                             <boxGeometry args={[0.4, 0.05, 0.05]} />
+                        </mesh>
+                    </>
+                )}
+
+                {/* Gladiator chest plate & shoulder */}
+                {outfit === 'GLADIATOR' && (
+                    <>
+                        <mesh position={[0, 0.05, 0.2]} material={materials.bronze}>
+                            <boxGeometry args={[0.5, 0.45, 0.15]} />
+                        </mesh>
+                        <mesh position={[-0.32, 0.25, 0.05]} rotation={[0, 0, 0.3]} material={materials.bronze}>
+                            <boxGeometry args={[0.15, 0.25, 0.35]} />
+                        </mesh>
+                        <mesh position={[0.32, 0.25, 0.05]} rotation={[0, 0, -0.3]} material={materials.bronze}>
+                            <boxGeometry args={[0.15, 0.25, 0.35]} />
                         </mesh>
                     </>
                 )}
@@ -1035,6 +1281,24 @@ const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean;
                     </group>
                 )}
 
+                {/* Pointy wizard hat for Elder Sage */}
+                {outfit === 'SAGE' && (
+                    <group position={[0, 0.5, 0]} rotation={[-0.15, 0, 0]}>
+                        <mesh castShadow receiveShadow>
+                            <coneGeometry args={[0.32, 0.7, 16]} />
+                            <meshToonMaterial color="#2d1b4e" />
+                        </mesh>
+                        <mesh position={[0, -0.35, 0]}>
+                            <cylinderGeometry args={[0.33, 0.36, 0.08, 16]} />
+                            <meshToonMaterial color="#2d1b4e" />
+                        </mesh>
+                        <mesh position={[0, -0.39, 0]}>
+                            <torusGeometry args={[0.36, 0.03, 8, 16]} rotation={[Math.PI/2, 0, 0]} />
+                            <meshToonMaterial color="#5c3d7a" />
+                        </mesh>
+                    </group>
+                )}
+
                 {/* Nurse Cap */}
                 {outfit === 'NURSE' && (
                     <group position={[0, 0.35, 0.1]} rotation={[-0.2, 0, 0]}>
@@ -1047,6 +1311,20 @@ const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean;
                             <mesh position={[0, 0, -0.01]}><planeGeometry args={[0.2, 0.06]} /><meshBasicMaterial color="#ff0000" /></mesh>
                             <mesh position={[0, 0, -0.01]}><planeGeometry args={[0.06, 0.2]} /><meshBasicMaterial color="#ff0000" /></mesh>
                         </group>
+                    </group>
+                )}
+
+                {/* Gladiator helmet (galea) */}
+                {outfit === 'GLADIATOR' && (
+                    <group position={[0, 0.25, 0]} rotation={[-0.1, 0, 0]}>
+                        <mesh castShadow>
+                            <sphereGeometry args={[0.42, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+                            <meshToonMaterial color="#8b6914" metalness={0.6} roughness={0.4} />
+                        </mesh>
+                        <mesh position={[0, 0.35, 0.05]} castShadow>
+                            <boxGeometry args={[0.08, 0.25, 0.08]} />
+                            <meshToonMaterial color="#5c4a0f" metalness={0.5} roughness={0.5} />
+                        </mesh>
                     </group>
                 )}
 
@@ -1103,6 +1381,47 @@ const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean;
                     <capsuleGeometry args={[0.005, 0.06, 4, 8]} />
                 </mesh>
 
+                {/* Kratos-style full beard (Blacksmith) - dense, no toothbrush mustache */}
+                {outfit === 'BLACKSMITH' && (
+                    <group position={[0, -0.2, 0.26]} rotation={[0.22, 0, 0]}>
+                        {/* Dense core under chin - main bulk */}
+                        <mesh position={[0, -0.06, 0]} material={materials.beard}>
+                            <sphereGeometry args={[0.18, 12, 12]} />
+                        </mesh>
+                        <mesh position={[0, -0.2, 0.02]} material={materials.beard}>
+                            <capsuleGeometry args={[0.14, 0.28, 6, 12]} />
+                        </mesh>
+                        {/* Left jaw - full and thick */}
+                        <mesh position={[-0.2, -0.04, -0.04]} rotation={[0, 0, 0.2]} material={materials.beard}>
+                            <capsuleGeometry args={[0.1, 0.24, 6, 10]} />
+                        </mesh>
+                        <mesh position={[-0.22, -0.14, -0.02]} rotation={[0, 0, 0.15]} material={materials.beard}>
+                            <capsuleGeometry args={[0.09, 0.2, 6, 10]} />
+                        </mesh>
+                        {/* Right jaw - full and thick */}
+                        <mesh position={[0.2, -0.04, -0.04]} rotation={[0, 0, -0.2]} material={materials.beard}>
+                            <capsuleGeometry args={[0.1, 0.24, 6, 10]} />
+                        </mesh>
+                        <mesh position={[0.22, -0.14, -0.02]} rotation={[0, 0, -0.15]} material={materials.beard}>
+                            <capsuleGeometry args={[0.09, 0.2, 6, 10]} />
+                        </mesh>
+                        {/* Extra layer for fullness - center */}
+                        <mesh position={[0, -0.12, 0.06]} material={materials.beard}>
+                            <capsuleGeometry args={[0.12, 0.2, 6, 10]} />
+                        </mesh>
+                        {/* Full mustache - one wide band that connects into beard, not separate patches */}
+                        <mesh position={[0, 0.02, 0.34]} rotation={[0.15, 0, 0]} material={materials.beard}>
+                            <boxGeometry args={[0.28, 0.06, 0.08]} />
+                        </mesh>
+                        <mesh position={[-0.06, -0.02, 0.32]} rotation={[0.2, 0, 0.08]} material={materials.beard}>
+                            <capsuleGeometry args={[0.04, 0.1, 4, 8]} />
+                        </mesh>
+                        <mesh position={[0.06, -0.02, 0.32]} rotation={[0.2, 0, -0.08]} material={materials.beard}>
+                            <capsuleGeometry args={[0.04, 0.1, 4, 8]} />
+                        </mesh>
+                    </group>
+                )}
+
             </group>
 
             {/* Limbs */}
@@ -1115,6 +1434,24 @@ const PikachuModel: React.FC<{ color?: string; flash: boolean; talking: boolean;
                 <mesh position={[0, -0.1, 0]} material={materials.yellow}>
                     <capsuleGeometry args={[0.07, 0.25, 4, 8]} />
                 </mesh>
+                {/* Gladiator arm guard (manica) + battle spear */}
+                {outfit === 'GLADIATOR' && (
+                    <>
+                        <mesh position={[0, -0.05, 0]} material={materials.bronze}>
+                            <capsuleGeometry args={[0.09, 0.28, 4, 8]} />
+                        </mesh>
+                        <group position={[0, 0.15, 0.35]} rotation={[0.4, 0, 0]}>
+                            <mesh position={[0, 0.5, 0]} castShadow>
+                                <cylinderGeometry args={[0.02, 0.025, 1.1, 8]} />
+                                <meshToonMaterial color="#4a4a4a" metalness={0.7} roughness={0.3} />
+                            </mesh>
+                            <mesh position={[0, 1.1, 0]}>
+                                <coneGeometry args={[0.08, 0.2, 6]} />
+                                <meshToonMaterial color="#8b6914" metalness={0.7} roughness={0.3} />
+                            </mesh>
+                        </group>
+                    </>
+                )}
             </group>
             
             <group ref={leftLegRef} position={[-0.2, -0.25, 0]}>
@@ -1516,7 +1853,7 @@ const TownNPC: React.FC<{ data: TownNPCData; playerRef: React.RefObject<THREE.Ob
     const isTalking = activeDialoguePartner === npcData.id;
     const isMoving = aiState.current === 'MOVING';
     const bodyColor = flash ? "#ff0000" : "#ffcc00";
-    const npcOutfit = npcData.role === 'Mayor' ? 'MAYOR' : npcData.role === 'Nurse' ? 'NURSE' : 'NONE';
+    const npcOutfit = npcData.role === 'Mayor' ? 'MAYOR' : npcData.role === 'Nurse' ? 'NURSE' : npcData.role === 'Historian' ? 'SAGE' : npcData.role === 'Blacksmith' ? 'BLACKSMITH' : 'NONE';
     
     // UI logic: If typing, show typewriter text. Otherwise, show AI response or fallback.
     const currentDisplayText = isTyping ? typedText : (npcData.aiResponse || npcData.dialogue[0]);
@@ -1583,17 +1920,27 @@ export const TownSystem: React.FC<{ playerRef: React.RefObject<THREE.Object3D> }
                 );
             })}
 
-            {/* Extended Fence System */}
-            <Fence controlPoints={[
-                 [-25, 25], [20, 55], [60, 55], [90, 45], [100, 15]
-             ]} />
-             <Fence controlPoints={[
-                 [-25, -15], [20, -45], [60, -45], [90, -35], [100, -5]
-             ]} />
-             
-             {/* Moved Gates */}
-             <GatePost position={[-25, 5]} />
-             <GatePost position={[100, 5]} />
+            {/* Fence around town - only two openings where paths exit */}
+            {/* North boundary */}
+            <Fence controlPoints={[[-25, 25], [20, 55], [60, 55], [90, 45], [100, 15]]} />
+            {/* South boundary */}
+            <Fence controlPoints={[[-25, -15], [20, -45], [60, -45], [90, -35], [100, -5]]} />
+            {/* West side: two segments with gap for path at z=5 */}
+            <Fence controlPoints={[[-25, 25], [-25, 9]]} />
+            <Fence controlPoints={[[-25, 1], [-25, -15]]} />
+            {/* East side: two segments with gap for path at z=5 */}
+            <Fence controlPoints={[[100, 15], [100, 9]]} />
+            <Fence controlPoints={[[100, 1], [100, -5]]} />
+
+            {/* Entrance arches at the end of cobblestone paths (only two openings) */}
+            <EntranceArch position={[-25, 5]} rotation={Math.PI / 2} />
+            <EntranceArch position={[100, 5]} rotation={-Math.PI / 2} />
+
+            {/* Guard Pikachu soldiers: two at each gate, gladiator armor + spears, attack enemies trying to enter */}
+            <GateGuard position={[-27, 3]} gateSide="west" />
+            <GateGuard position={[-27, 7]} gateSide="west" />
+            <GateGuard position={[102, 3]} gateSide="east" />
+            <GateGuard position={[102, 7]} gateSide="east" />
         </group>
     );
 };

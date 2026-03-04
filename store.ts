@@ -54,15 +54,69 @@ const INITIAL_TOWN_ANIMALS: TownAnimalData[] = [
     { id: 'dog2', type: 'DOG', position: [50, 0, 2] },
 ];
 
+// Town fence polygon (closed): vertices [x, z] clockwise. Matches Fence controlPoints in Town.tsx.
+const TOWN_FENCE_POLYGON: [number, number][] = [
+    [-25, 9], [-25, 25], [20, 55], [60, 55], [90, 45], [100, 15], [100, 9], [100, 1], [100, -5],
+    [90, -35], [60, -45], [20, -45], [-25, -15], [-25, 1], [-25, 9]
+];
+
+function isInsideTownFence(x: number, z: number): boolean {
+    const n = TOWN_FENCE_POLYGON.length;
+    let inside = false;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+        const [xi, zi] = TOWN_FENCE_POLYGON[i];
+        const [xj, zj] = TOWN_FENCE_POLYGON[j];
+        if (((zi > z) !== (zj > z)) && (x < (xj - xi) * (z - zi) / (zj - zi) + xi)) inside = !inside;
+    }
+    return inside;
+}
+
+function nearestPointOutsideFence(x: number, z: number): [number, number] {
+    let bestX = x;
+    let bestZ = z;
+    let bestDistSq = Infinity;
+    const n = TOWN_FENCE_POLYGON.length;
+    const outDist = 3;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+        const [xi, zi] = TOWN_FENCE_POLYGON[i];
+        const [xj, zj] = TOWN_FENCE_POLYGON[j];
+        const dx = xj - xi;
+        const dz = zj - zi;
+        const lenSq = dx * dx + dz * dz || 1e-6;
+        const t = Math.max(0, Math.min(1, ((x - xi) * dx + (z - zi) * dz) / lenSq));
+        const px = xi + t * dx;
+        const pz = zi + t * dz;
+        const toPointX = x - px;
+        const toPointZ = z - pz;
+        const distSq = toPointX * toPointX + toPointZ * toPointZ;
+        const len = Math.sqrt(distSq) || 1;
+        const nx = toPointX / len;
+        const nz = toPointZ / len;
+        const outX = px - nx * outDist;
+        const outZ = pz - nz * outDist;
+        if (!isInsideTownFence(outX, outZ) && distSq < bestDistSq) {
+            bestDistSq = distSq;
+            bestX = outX;
+            bestZ = outZ;
+        }
+    }
+    return [bestX, bestZ];
+}
+
 const getRandomSpawnPosition = (radius: number): [number, number, number] => {
-    let x, z;
+    let x: number, z: number;
     let attempts = 0;
+    const maxAttempts = 200;
     do {
         x = (Math.random() - 0.5) * radius * 2;
         z = (Math.random() - 0.5) * radius * 2;
         attempts++;
-    } while ((x > -30 && x < 105 && z > -50 && z < 65) && attempts < 100);
-    
+    } while (isInsideTownFence(x, z) && attempts < maxAttempts);
+
+    if (isInsideTownFence(x, z)) {
+        [x, z] = nearestPointOutsideFence(x, z);
+    }
+
     const y = getTerrainHeight(x, z);
     return [x, y + 1, z];
 };
@@ -119,11 +173,14 @@ const createForest = (): EnvironmentObjectData[] => {
 const PERSISTENT_ENVIRONMENT = createForest();
 
 interface GameStore extends GameState {
+    enemyPushImpulses: Record<string, { vx: number; vz: number }>;
     currentSpeed: number;
     setCurrentSpeed: (speed: number) => void;
     cutGrassAt: ((x1: number, z1: number, radius: number, strength: number, x2?: number, z2?: number) => void) | null;
     registerCutGrass: (fn: (x1: number, z1: number, radius: number, strength: number, x2?: number, z2?: number) => void) => void;
     updateEnemyPosition: (id: string, pos: [number, number, number]) => void;
+    setEnemyPushImpulse: (id: string, vx: number, vz: number) => void;
+    consumeEnemyPushImpulse: (id: string) => { vx: number; vz: number } | null;
     updateTownNPCPosition: (id: string, pos: [number, number, number]) => void;
     setTownNPCDialogue: (id: string, text: string) => void;
     damageTownNPC: (id: string, amount: number) => void;
@@ -190,6 +247,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
   updateEnemyPosition: (id, pos) => set((state) => ({
       enemies: state.enemies.map(e => e.id === id ? { ...e, position: pos } : e)
   })),
+  enemyPushImpulses: {} as Record<string, { vx: number; vz: number }>,
+  setEnemyPushImpulse: (id, vx, vz) => set((state) => ({
+      enemyPushImpulses: { ...state.enemyPushImpulses, [id]: { vx, vz } }
+  })),
+  consumeEnemyPushImpulse: (id) => {
+      const state = get();
+      const imp = state.enemyPushImpulses[id];
+      if (!imp) return null;
+      set((s) => {
+          const next = { ...s.enemyPushImpulses };
+          delete next[id];
+          return { enemyPushImpulses: next };
+      });
+      return imp;
+  },
 
   updateTownNPCPosition: (id, pos) => set((state) => ({
       townNPCs: state.townNPCs.map(n => n.id === id ? { ...n, position: pos } : n)
@@ -281,7 +353,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
     enemies: [...generateInitialEnemies()],
     environmentObjects: [...createForest()],
     projectiles: [],
-    isInsideBuildingId: null
+    isInsideBuildingId: null,
+    enemyPushImpulses: {}
   }),
 
   togglePause: () => set((state) => ({ isPaused: !state.isPaused })),

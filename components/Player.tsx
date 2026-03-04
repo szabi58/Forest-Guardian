@@ -108,9 +108,55 @@ const SwordChargeParticles: React.FC<{ active: boolean; charge: number }> = ({ a
 
   return (
     <instancedMesh ref={meshRef} args={[undefined, undefined, count]} frustumCulled={false}>
-      <boxGeometry args={[1, 1, 1]} />
-      <meshBasicMaterial color="#ff3300" transparent opacity={0.8} />
+      <sphereGeometry args={[0.5, 6, 6]} />
+      <meshBasicMaterial color={active ? "#ff3300" : "#4488ff"} transparent opacity={0.85} />
     </instancedMesh>
+  );
+};
+
+// --- BLADE SPARKS (blue/white magical particles from blade edges) ---
+const SwordBladeParticles: React.FC<{ active: boolean; bladeLength: number }> = ({ active, bladeLength }) => {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const count = 16;
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const particles = useMemo(() => Array.from({ length: count }).map(() => ({
+    y: Math.random() * bladeLength,
+    side: Math.random() > 0.5 ? 1 : -1,
+    life: Math.random(),
+    speed: 0.5 + Math.random() * 1.5
+  })), [count, bladeLength]);
+
+  useFrame((_, delta) => {
+    if (!meshRef.current) return;
+    particles.forEach((p, i) => {
+      if (active) {
+        p.life -= delta * p.speed;
+        if (p.life <= 0) {
+          p.life = 1;
+          p.y = Math.random() * bladeLength;
+          p.side = Math.random() > 0.5 ? 1 : -1;
+        }
+        const s = 0.02 * p.life;
+        dummy.position.set(p.side * 0.1, p.y - bladeLength / 2, (Math.random() - 0.5) * 0.04);
+        dummy.scale.set(s, s, s);
+        dummy.updateMatrix();
+        meshRef.current!.setMatrixAt(i, dummy.matrix);
+      } else {
+        dummy.scale.set(0, 0, 0);
+        dummy.updateMatrix();
+        meshRef.current!.setMatrixAt(i, dummy.matrix);
+      }
+    });
+    meshRef.current.instanceMatrix.needsUpdate = true;
+  });
+
+  return (
+    <group position={[0, bladeLength / 2, 0]}>
+      <instancedMesh ref={meshRef} args={[undefined, undefined, count]} frustumCulled={false}>
+        <sphereGeometry args={[1, 4, 4]} />
+        <meshBasicMaterial color="#aaddff" transparent opacity={0.9} />
+      </instancedMesh>
+    </group>
   );
 };
 
@@ -282,58 +328,142 @@ const SlashArc: React.FC<{ comboStep: number; progress: number }> = ({ comboStep
   );
 };
 
-// --- DREAD SWORD WITH HITBOX POINTS ---
+// --- MAGICAL BROADSWORD (reference: blue glow, runes, bat-wing guard, skull pommel) ---
+const BLADE_LENGTH = 1.15;
+const BLADE_WIDTH = 0.08;
+const SERRATION_COUNT = 10;
+
 const DreadSword = React.forwardRef<THREE.Group, { isAttacking: boolean; isSpinning: boolean; isCharging: boolean; charge: number; comboStep: number; lastAttackTime: number; tipRef: React.RefObject<THREE.Group>; baseRef: React.RefObject<THREE.Group> }>(({ isAttacking, isSpinning, isCharging, charge, comboStep, lastAttackTime, tipRef, baseRef }, ref) => {
   const runeGlowRef = useRef<THREE.Group>(null);
+  const bladeGlowRef = useRef<THREE.Mesh>(null);
   const cutGrassAt = useGameStore(s => s.cutGrassAt);
   const tempWorldPos = useRef(new THREE.Vector3());
 
+  const serrationPositions = useMemo(() => {
+    const out: { y: number; side: number }[] = [];
+    for (let i = 0; i < SERRATION_COUNT; i++) {
+      const t = (i + 0.5) / SERRATION_COUNT;
+      out.push({ y: t * BLADE_LENGTH, side: 1 });
+      out.push({ y: t * BLADE_LENGTH, side: -1 });
+    }
+    return out;
+  }, []);
+
   useFrame(() => {
+    const baseIntensity = (isAttacking || isSpinning ? 2.5 : 1.2);
+    const chargeIntensity = isCharging ? charge * 1.5 : 0;
+    const glowIntensity = baseIntensity + chargeIntensity;
+
     if (runeGlowRef.current) {
-      runeGlowRef.current.position.y = 0.5 + Math.sin(performance.now() * 0.015) * 0.05;
-      const baseIntensity = (isAttacking || isSpinning ? 25 : 2);
-      const chargeIntensity = isCharging ? charge * 40 : 0;
-      const intensity = baseIntensity + chargeIntensity;
-      
       runeGlowRef.current.children.forEach((child) => {
         if ((child as THREE.Mesh).material) {
           const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
-          mat.emissiveIntensity = intensity;
-          if (isCharging) mat.emissive.lerp(new THREE.Color("#ff3300"), charge * 0.5);
-          else mat.emissive.set(isSpinning ? "#ff3333" : comboStep === 3 ? "#ffffff" : "#00ffff");
+          mat.emissiveIntensity = glowIntensity * 8;
+          if (isCharging) mat.emissive.lerp(new THREE.Color("#ff4400"), charge * 0.5);
+          else mat.emissive.set("#ff6622");
         }
       });
     }
+    if (bladeGlowRef.current?.material) {
+      const mat = bladeGlowRef.current.material as THREE.MeshStandardMaterial;
+      mat.emissiveIntensity = glowIntensity;
+    }
 
     if (isAttacking && tipRef.current && cutGrassAt) {
-        tipRef.current.getWorldPosition(tempWorldPos.current);
-        cutGrassAt(tempWorldPos.current.x, tempWorldPos.current.z, 1.2, 0.8);
+      tipRef.current.getWorldPosition(tempWorldPos.current);
+      cutGrassAt(tempWorldPos.current.x, tempWorldPos.current.z, 1.2, 0.8);
     }
   });
 
   return (
-    // Root of the sword is at the hand; we nudge it slightly forward in local Z
-    // so the blade swings in front of the torso instead of through it.
     <group ref={ref} position={[0, 0, 0.15]} rotation={[Math.PI / 2, 0, 0]} scale={[1.2, 1.2, 1.2]}>
-      <mesh position={[0, -0.4, 0]}>
-        <cylinderGeometry args={[0.04, 0.05, 0.5, 8]} />
-        <meshStandardMaterial color="#2c1e16" roughness={0.9} />
-      </mesh>
-      
-      <group ref={baseRef} position={[0, -0.1, 0]} />
-      <group ref={tipRef} position={[0, 1.2, 0]} />
+      <group ref={baseRef} position={[0, -0.08, 0]} />
+      <group ref={tipRef} position={[0, BLADE_LENGTH + 0.02, 0]} />
 
-      <group position={[0, -0.1, 0]}>
-        <mesh castShadow><sphereGeometry args={[0.15, 12, 12]} scale={[1, 1.2, 0.8]} /><meshStandardMaterial color="#888" roughness={0.6} /></mesh>
+      {/* Skull pommel — dark, glowing red eyes */}
+      <group position={[0, -0.52, 0]}>
+        <mesh castShadow>
+          <sphereGeometry args={[0.12, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.65]} />
+          <meshStandardMaterial color="#1a1512" roughness={0.85} metalness={0.15} />
+        </mesh>
+        <mesh position={[0.04, 0.06, 0.1]}><sphereGeometry args={[0.028, 8, 6]} /><meshStandardMaterial color="#ff2222" emissive="#cc0000" emissiveIntensity={3} /></mesh>
+        <mesh position={[-0.04, 0.06, 0.1]}><sphereGeometry args={[0.028, 8, 6]} /><meshStandardMaterial color="#ff2222" emissive="#cc0000" emissiveIntensity={3} /></mesh>
       </group>
-      
-      <group position={[0, 0.55, 0]}>
-        <mesh castShadow><boxGeometry args={[0.18, 1.1, 0.04]} /><meshStandardMaterial color="#111" metalness={0.9} roughness={0.1} /></mesh>
-        <group ref={runeGlowRef}>
-          <mesh position={[0, 0, 0.025]}><boxGeometry args={[0.03, 0.9, 0.012]} /><meshStandardMaterial color="#00ffff" emissive="#00ffff" emissiveIntensity={5} transparent opacity={0.9} /></mesh>
+
+      {/* Grip — dark wrapped leather, ridges */}
+      <mesh position={[0, -0.28, 0]} castShadow>
+        <cylinderGeometry args={[0.045, 0.05, 0.38, 12]} />
+        <meshStandardMaterial color="#1e1610" roughness={0.92} />
+      </mesh>
+      {[0, 1, 2, 3, 4].map((i) => (
+        <mesh key={i} position={[0, -0.38 + i * 0.095, 0]} rotation={[0, 0, (i % 2) * 0.08]}>
+          <torusGeometry args={[0.048, 0.008, 6, 12]} />
+          <meshStandardMaterial color="#2a2018" roughness={0.9} />
+        </mesh>
+      ))}
+
+      {/* Crossguard — bat-wing / demonic horns, dark metal, faint blue edge */}
+      <group position={[0, -0.08, 0]}>
+        {/* Left wing — curves up and down with points */}
+        <mesh position={[-0.22, 0.08, 0]} rotation={[0, 0, Math.PI / 2]} castShadow>
+          <boxGeometry args={[0.06, 0.35, 0.06]} />
+          <meshStandardMaterial color="#0d0a08" metalness={0.8} roughness={0.35} />
+        </mesh>
+        <mesh position={[-0.32, 0.18, 0.02]} rotation={[0, 0, Math.PI / 2 - 0.4]} castShadow>
+          <boxGeometry args={[0.04, 0.2, 0.04]} />
+          <meshStandardMaterial color="#0d0a08" metalness={0.8} roughness={0.35} emissive="#111133" emissiveIntensity={0.4} />
+        </mesh>
+        <mesh position={[-0.32, -0.02, 0.02]} rotation={[0, 0, Math.PI / 2 + 0.35]} castShadow>
+          <boxGeometry args={[0.04, 0.18, 0.04]} />
+          <meshStandardMaterial color="#0d0a08" metalness={0.8} roughness={0.35} emissive="#111133" emissiveIntensity={0.4} />
+        </mesh>
+        {/* Right wing */}
+        <mesh position={[0.22, 0.08, 0]} rotation={[0, 0, -Math.PI / 2]} castShadow>
+          <boxGeometry args={[0.06, 0.35, 0.06]} />
+          <meshStandardMaterial color="#0d0a08" metalness={0.8} roughness={0.35} />
+        </mesh>
+        <mesh position={[0.32, 0.18, 0.02]} rotation={[0, 0, -Math.PI / 2 + 0.4]} castShadow>
+          <boxGeometry args={[0.04, 0.2, 0.04]} />
+          <meshStandardMaterial color="#0d0a08" metalness={0.8} roughness={0.35} emissive="#111133" emissiveIntensity={0.4} />
+        </mesh>
+        <mesh position={[0.32, -0.02, 0.02]} rotation={[0, 0, -Math.PI / 2 - 0.35]} castShadow>
+          <boxGeometry args={[0.04, 0.18, 0.04]} />
+          <meshStandardMaterial color="#0d0a08" metalness={0.8} roughness={0.35} emissive="#111133" emissiveIntensity={0.4} />
+        </mesh>
+        {/* Center block */}
+        <mesh castShadow><boxGeometry args={[0.12, 0.08, 0.07]} /><meshStandardMaterial color="#0a0806" metalness={0.85} roughness={0.3} /></mesh>
+      </group>
+
+      {/* Blade — double-edged, serrated, bright blue glow, runes */}
+      <group position={[0, BLADE_LENGTH / 2, 0]}>
+        {/* Core blade — full length */}
+        <mesh castShadow>
+          <boxGeometry args={[BLADE_WIDTH * 1.1, BLADE_LENGTH, 0.022]} />
+          <meshStandardMaterial color="#1a2233" metalness={0.9} roughness={0.15} />
+        </mesh>
+        {/* Outer glow — neon blue */}
+        <mesh ref={bladeGlowRef}>
+          <boxGeometry args={[BLADE_WIDTH * 1.5, BLADE_LENGTH + 0.02, 0.018]} />
+          <meshStandardMaterial color="#66ccff" emissive="#2288ff" emissiveIntensity={1.2} transparent opacity={0.88} />
+        </mesh>
+        {/* Serrations — tooth-like along both edges */}
+        {serrationPositions.map(({ y, side }, i) => (
+          <mesh key={i} position={[side * (BLADE_WIDTH + 0.012), y - BLADE_LENGTH / 2, 0]} rotation={[0, 0, side * 0.15]}>
+            <coneGeometry args={[0.018, 0.04, 4]} />
+            <meshStandardMaterial color="#4488cc" emissive="#2266aa" emissiveIntensity={0.6} metalness={0.8} roughness={0.2} />
+          </mesh>
+        ))}
+        {/* Runes — red-orange glowing symbols along the flat */}
+        <group ref={runeGlowRef} position={[0, 0, 0.014]}>
+          <mesh position={[0, -0.2, 0]}><boxGeometry args={[0.012, 0.25, 0.004]} /><meshStandardMaterial color="#ff6622" emissive="#ff4400" emissiveIntensity={6} /></mesh>
+          <mesh position={[0, 0.15, 0]}><boxGeometry args={[0.01, 0.18, 0.004]} /><meshStandardMaterial color="#ff6622" emissive="#ff4400" emissiveIntensity={6} /></mesh>
+          <mesh position={[0, 0.45, 0]}><boxGeometry args={[0.008, 0.12, 0.004]} /><meshStandardMaterial color="#ff6622" emissive="#ff4400" emissiveIntensity={6} /></mesh>
         </group>
         <SwordChargeParticles active={isCharging} charge={charge} />
       </group>
+
+      {/* Blade edge sparks — blue/white particles when attacking or spinning */}
+      <SwordBladeParticles active={isAttacking || isSpinning} bladeLength={BLADE_LENGTH} />
     </group>
   );
 });
@@ -545,12 +675,10 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
         if (leftArmRef.current) leftArmRef.current.rotation.x = Math.sin(phaseR) * armSwing;
         if (rightArmRef.current && !isAttacking) rightArmRef.current.rotation.x = Math.sin(phaseL) * armSwing;
 
-        // Body Bob & Sway (driven by walk cycle)
+        // Body Bob & Sway (driven by walk cycle) - reduced for less camera shake
         if (bodyRef.current) {
-            // Bob up twice per cycle (once per step)
-            bodyRef.current.position.y = 0.65 + Math.sin(walkCycle.current * 2) * 0.03;
-            // Slight sway (roll)
-            bodyRef.current.rotation.z = Math.cos(walkCycle.current) * 0.05;
+            bodyRef.current.position.y = 0.65 + Math.sin(walkCycle.current * 2) * 0.01;
+            bodyRef.current.rotation.z = Math.cos(walkCycle.current) * 0.02;
         }
     } else if (!isGrounded) {
         if (leftLegRef.current) leftLegRef.current.rotation.x = 0.3;
@@ -568,9 +696,9 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
         if (rightFootRef.current) rightFootRef.current.rotation.x = THREE.MathUtils.lerp(rightFootRef.current.rotation.x, 0, 0.2);
         if (leftArmRef.current) leftArmRef.current.rotation.x = THREE.MathUtils.lerp(leftArmRef.current.rotation.x, 0, 0.2);
         
-        // Breathing Idle
+        // Breathing Idle - subtle
         if (bodyRef.current) {
-             bodyRef.current.position.y = 0.65 + Math.sin(t * 2) * 0.01;
+             bodyRef.current.position.y = 0.65 + Math.sin(t * 2) * 0.004;
              bodyRef.current.rotation.z = THREE.MathUtils.lerp(bodyRef.current.rotation.z, 0, 0.1);
         }
     }
@@ -877,8 +1005,9 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
     const rayOrigin = { x: currentPos.x, y: currentPos.y + 0.5, z: currentPos.z };
     const rayDir = { x: 0, y: -1, z: 0 };
     const downRay = new rapier.Ray(rayOrigin, rayDir);
-    const groundHit = world.castRay(downRay, 0.8, true, undefined, undefined, undefined, rigidBody.current);
-    const actuallyGrounded = groundHit && (groundHit as any).toi < 0.7;
+    const groundRayLen = 1.4;
+    const groundHit = world.castRay(downRay, groundRayLen, true, undefined, undefined, undefined, rigidBody.current);
+    const actuallyGrounded = groundHit && (groundHit as any).toi < 1.2;
     useGameStore.setState({ isGrounded: actuallyGrounded });
 
     // --- KAMEHAMEHA LOGIC ---
