@@ -1,6 +1,6 @@
 
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react';
-import { RigidBody, RapierRigidBody, CuboidCollider, MeshCollider } from '@react-three/rapier';
+import { RigidBody, RapierRigidBody, CuboidCollider, MeshCollider, HeightfieldCollider } from '@react-three/rapier';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useGameStore } from '../store';
@@ -386,9 +386,13 @@ const Grass: React.FC = () => {
   return <instancedMesh ref={meshRef} args={[geometry, material, count]} frustumCulled={false}><instancedBufferAttribute attach="aBladeNoise" args={[bladeNoise, 1]} /></instancedMesh>;
 };
 
+const TERRAIN_SIZE = 500;
+const HEIGHTFIELD_SEGS = 100;
+
 export const Environment: React.FC = () => {
   const envObjs = useGameStore(s => s.environmentObjects);
-  const size = 500, segs = 150;
+  const size = TERRAIN_SIZE;
+  const segs = 150;
   // Single terrain geometry with Y-up so collider and visual match (avoids trimesh rotation issues)
   const geo = useMemo(() => {
     const g = new THREE.PlaneGeometry(size, size, segs, segs);
@@ -434,16 +438,42 @@ export const Environment: React.FC = () => {
       return mat;
   }, []);
 
-  // Safety floor: prevents falling through the map if trimesh collider fails or tunnels
+  // Heightfield: Rapier expects column-major order (column index varies fastest in memory)
+  const heightfieldArgs = useMemo(() => {
+    const nRows = HEIGHTFIELD_SEGS;
+    const nCols = HEIGHTFIELD_SEGS;
+    const half = TERRAIN_SIZE / 2;
+    const step = TERRAIN_SIZE / HEIGHTFIELD_SEGS;
+    const numHeights = (nRows + 1) * (nCols + 1);
+    const heights = new Float32Array(numHeights);
+    for (let col = 0; col <= nCols; col++) {
+      for (let row = 0; row <= nRows; row++) {
+        const x = -half + col * step;
+        const z = -half + row * step;
+        const idx = row + col * (nRows + 1); // column-major
+        heights[idx] = getTerrainHeight(x, z);
+      }
+    }
+    const cellSize = TERRAIN_SIZE / HEIGHTFIELD_SEGS;
+    return [nRows, nCols, heights, { x: cellSize, y: 1, z: cellSize }] as const;
+  }, []);
+
+  const heightfieldOrigin = -TERRAIN_SIZE / 2;
+
+  // Safety floor: prevents falling through the map if colliders fail or tunnel
   const safetyFloorY = -25;
   const halfExtent = 260;
 
   return (
     <group>
+      {/* Terrain: visual mesh + trimesh (exact match) and heightfield for robust collision */}
       <RigidBody type="fixed" friction={2} colliders={false}>
         <MeshCollider type="trimesh">
-            <mesh geometry={geo} receiveShadow material={material} />
+          <mesh geometry={geo} receiveShadow material={material} />
         </MeshCollider>
+      </RigidBody>
+      <RigidBody type="fixed" position={[heightfieldOrigin, 0, heightfieldOrigin]} friction={2} colliders={false}>
+        <HeightfieldCollider args={heightfieldArgs} />
       </RigidBody>
       <RigidBody type="fixed" position={[0, safetyFloorY, 0]} friction={1} colliders={false}>
         <CuboidCollider args={[halfExtent, 1, halfExtent]} />

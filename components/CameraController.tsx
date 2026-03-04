@@ -21,20 +21,22 @@ export const CameraController: React.FC<CameraControllerProps> = ({ playerRef })
   const { camera } = useThree();
   const { world, rapier } = useRapier();
   
-  const targetYaw = useRef(0);
+  const targetYaw = useRef(0);   // offset from player facing (radians)
   const targetPitch = useRef(0.2);
   const currentYaw = useRef(0);
   const currentPitch = useRef(0.2);
   
   const yawVelocity = useRef(0);
   const pitchVelocity = useRef(0);
+  const lastCameraInputTime = useRef(0);
   
   const currentPosition = useRef(new THREE.Vector3(0, 10, 10));
   const currentTarget = useRef(new THREE.Vector3(0, 0, 0));
-  const smoothedHeight = useRef(0);  // smoothed look-at height to eliminate vertical bounce when walking
+  const smoothedHeight = useRef(0);
   const tempVec = useRef(new THREE.Vector3());
   const rayOrigin = useRef(new THREE.Vector3());
   const rayDir = useRef(new THREE.Vector3());
+  const playerForward = useRef(new THREE.Vector3());
 
   const isInsideBuildingId = useGameStore(s => s.isInsideBuildingId);
 
@@ -42,15 +44,17 @@ export const CameraController: React.FC<CameraControllerProps> = ({ playerRef })
     BASE_DISTANCE: isInsideBuildingId ? 3.8 : 8.5,
     MIN_DISTANCE: 1.2,
     LOOK_AT_HEIGHT: 1.2,
-    ROTATION_SMOOTHING: 15,
-    POSITION_SMOOTHING: 8,
-    TARGET_SMOOTHING: 0.35,
-    HEIGHT_SMOOTHING: 0.04,  // Very slow vertical follow - removes walk bounce
+    ROTATION_SMOOTHING: 22,
+    POSITION_SMOOTHING: 14,
+    TARGET_SMOOTHING: 0.55,
+    HEIGHT_SMOOTHING: 0.04,
     SENSITIVITY_X: 18.0,
     SENSITIVITY_Y: 12.0,
     FRICTION: 0.82,
     MIN_PITCH: -0.6,
     MAX_PITCH: 1.3,
+    NO_INPUT_RECENTER_TIME: 0.35,
+    YAW_RECENTER_SPEED: 3.5,
   };
 
   useFrame((state, delta) => {
@@ -63,10 +67,9 @@ export const CameraController: React.FC<CameraControllerProps> = ({ playerRef })
     const cameraDelta = store.cameraDelta;
     if (cameraDelta && (Math.abs(cameraDelta.x) > 0.0001 || Math.abs(cameraDelta.y) > 0.0001)) {
       if (isValid(cameraDelta.x) && isValid(cameraDelta.y)) {
-          // Normalize sensitivity by screen space or analog intensity
           yawVelocity.current = -cameraDelta.x * CONFIG.SENSITIVITY_X;
           pitchVelocity.current = cameraDelta.y * CONFIG.SENSITIVITY_Y;
-          
+          lastCameraInputTime.current = state.clock.elapsedTime;
           store.clearCameraDelta();
       }
     }
@@ -80,21 +83,35 @@ export const CameraController: React.FC<CameraControllerProps> = ({ playerRef })
     targetPitch.current += pitchVelocity.current;
     targetPitch.current = THREE.MathUtils.clamp(targetPitch.current, CONFIG.MIN_PITCH, CONFIG.MAX_PITCH);
 
+    // When not dragging, recenter camera behind the character so turning feels consistent
+    const timeSinceInput = state.clock.elapsedTime - lastCameraInputTime.current;
+    if (timeSinceInput > CONFIG.NO_INPUT_RECENTER_TIME) {
+      const recenter = 1 - Math.exp(-CONFIG.YAW_RECENTER_SPEED * delta);
+      targetYaw.current = THREE.MathUtils.lerp(targetYaw.current, 0, recenter);
+      yawVelocity.current *= 0.9;
+    }
+
     const chaseFactor = 1 - Math.exp(-CONFIG.ROTATION_SMOOTHING * delta);
     if (isValid(chaseFactor)) {
         currentYaw.current = THREE.MathUtils.lerp(currentYaw.current, targetYaw.current, chaseFactor);
         currentPitch.current = THREE.MathUtils.lerp(currentPitch.current, targetPitch.current, chaseFactor);
     }
 
-    // 3. COORDINATE CALCULATION
+    // 3. COORDINATE CALCULATION — use player's world facing for consistent third-person follow
     const playerPos = player.getWorldPosition(tempVec.current);
     if (!isValid(playerPos)) return;
+
+    player.getWorldDirection(playerForward.current);
+    playerForward.current.y = 0;
+    playerForward.current.normalize();
+    const playerYaw = Math.atan2(playerForward.current.x, playerForward.current.z);
 
     const targetLookAtY = playerPos.y + CONFIG.LOOK_AT_HEIGHT;
     if (smoothedHeight.current === 0) smoothedHeight.current = targetLookAtY;
     smoothedHeight.current = THREE.MathUtils.lerp(smoothedHeight.current, targetLookAtY, CONFIG.HEIGHT_SMOOTHING);
 
-    const finalYaw = player.rotation.y + currentYaw.current;
+    // Camera sits behind character: add PI so we look from behind, not face-to-face
+    const finalYaw = playerYaw + Math.PI + currentYaw.current;
     const finalPitch = currentPitch.current;
 
     const backDir = new THREE.Vector3(

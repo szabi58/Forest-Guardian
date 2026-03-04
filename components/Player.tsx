@@ -5,6 +5,7 @@ import { RigidBody, RapierRigidBody, CapsuleCollider, useRapier } from '@react-t
 import { useKeyboardControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { useGameStore } from '../store';
+import { getTerrainHeight } from './Environment';
 
 const MOVEMENT_SPEED = 12;
 const STANCE_SPEED_MULT = 0.5;
@@ -998,6 +999,7 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
     hitList.current.clear(); 
   }, [comboStep, isSpinning]);
 
+  const debugFrameCount = useRef(0);
   useFrame((state, delta) => {
     if (!rigidBody.current || isGameOver) return;
 
@@ -1006,14 +1008,24 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
     const currentPos = rigidBody.current.translation();
     let pendingJump = false;
 
-    // --- ENHANCED GROUNDING CHECK (RAYCAST) ---
-    const rayOrigin = { x: currentPos.x, y: currentPos.y + 0.5, z: currentPos.z };
-    const rayDir = { x: 0, y: -1, z: 0 };
-    const downRay = new rapier.Ray(rayOrigin, rayDir);
-    const groundRayLen = 1.4;
-    const groundHit = world.castRay(downRay, groundRayLen, true, undefined, undefined, undefined, rigidBody.current);
-    const actuallyGrounded = groundHit && (groundHit as any).toi < 1.2;
+    const ro = { x: currentPos.x, y: currentPos.y + 0.5, z: currentPos.z };
+    const downRay = new rapier.Ray(ro, { x: 0, y: -1, z: 0 });
+    const rayHit = world.castRay(downRay, 2.5, true, undefined, undefined, undefined, rigidBody.current);
+    const toi = rayHit != null ? (rayHit as { toi: number }).toi : null;
+    const actuallyGrounded = rayHit != null && toi != null && toi < 1.2;
     useGameStore.setState({ isGrounded: actuallyGrounded });
+
+    // #region agent log
+    debugFrameCount.current += 1;
+    if (debugFrameCount.current % 20 === 0) {
+      const terrainY = getTerrainHeight(currentPos.x, currentPos.z);
+      const feetY = currentPos.y - 0.05;
+      const diffFeetVsTerrain = feetY - terrainY;
+      fetch('http://127.0.0.1:7931/ingest/80470fea-84bf-4b5b-9da7-e664b9ea4c80', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'b46e66' }, body: JSON.stringify({ sessionId: 'b46e66', runId: 'post-fix', hypothesisId: 'H1', location: 'Player.tsx:ground-ray', message: 'ray down', data: { rayHit: !!rayHit, toi, actuallyGrounded }, timestamp: Date.now() }) }).catch(() => {});
+      fetch('http://127.0.0.1:7931/ingest/80470fea-84bf-4b5b-9da7-e664b9ea4c80', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'b46e66' }, body: JSON.stringify({ sessionId: 'b46e66', runId: 'post-fix', hypothesisId: 'H2', location: 'Player.tsx:height', message: 'body vs terrain', data: { posY: currentPos.y, terrainY, feetY, diffFeetVsTerrain, velY: cv.y }, timestamp: Date.now() }) }).catch(() => {});
+      fetch('http://127.0.0.1:7931/ingest/80470fea-84bf-4b5b-9da7-e664b9ea4c80', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'b46e66' }, body: JSON.stringify({ sessionId: 'b46e66', runId: 'post-fix', hypothesisId: 'H3', location: 'Player.tsx:ray-ground', message: 'hit point vs terrain', data: { toi, hitGroundY: toi != null ? ro.y - toi : null, terrainY }, timestamp: Date.now() }) }).catch(() => {});
+    }
+    // #endregion
 
     // --- KAMEHAMEHA LOGIC ---
     if (isKamehamehaCharging) {
@@ -1224,6 +1236,20 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
         }
         lastJumpKeyDown.current = jump;
     } catch (e) {}
+
+  });
+
+  // Visual only: offset mesh so feet appear at terrain height when grounded; when in air follow body but never clip below terrain
+  useFrame(() => {
+    if (!rigidBody.current || !playerMeshGroup.current || isGameOver) return;
+    const pos = rigidBody.current.translation();
+    const vel = rigidBody.current.linvel();
+    const terrainY = getTerrainHeight(pos.x, pos.z);
+    const bodyFeetY = pos.y - 0.05;
+    const inAir = vel.y > 1 || bodyFeetY > terrainY + 0.4;
+    const wantFeetY = inAir ? Math.max(bodyFeetY, terrainY) : terrainY;
+    const offsetY = wantFeetY - bodyFeetY;
+    playerMeshGroup.current.position.y = -0.05 + offsetY;
   });
 
   return (
@@ -1232,12 +1258,12 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
       colliders={false} 
       position={playerSpawnPos} 
       enabledRotations={[false, false, false]} 
-      friction={0} 
+      friction={0.5} 
       restitution={0} 
       userData={{ type: 'PLAYER' }}
     >
         <CapsuleCollider args={[0.5, 0.45]} position={[0, 0.9, 0]} contactSkin={0.02} />
-        <group ref={playerMeshGroup}>
+        <group ref={playerMeshGroup} position={[0, -0.05, 0]}>
             <SquirrelModel 
                 swordTipRef={swordTipRef} swordBaseRef={swordBaseRef}
                 comboStep={comboStep} lastAttackTime={lastAttackTime} isMoving={currentSpeed > 0.5} 
