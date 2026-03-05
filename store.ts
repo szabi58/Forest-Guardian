@@ -261,7 +261,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   shakeIntensity: 0,
   isHitStopping: false,
   currentSpeed: 0,
-  playerSpawnPos: [32, 2, 5],
+  playerSpawnPos: [25, 0, 12], // cobblestone path in front of medical facility (a bit forward from stairs)
   ambientSettings: { godRays: true, forestDust: true, fallingLeaves: true, alignTreesToSlope: false },
 
   cutGrassAt: null,

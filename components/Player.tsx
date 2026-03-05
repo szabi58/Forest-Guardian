@@ -1263,7 +1263,7 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
       userData={{ type: 'PLAYER' }}
     >
         <CapsuleCollider args={[0.5, 0.45]} position={[0, 0.9, 0]} contactSkin={0.02} />
-        <group ref={playerMeshGroup} position={[0, -0.05, 0]}>
+        <group ref={playerMeshGroup} position={[0, -0.05, 0]} rotation={[0, Math.PI, 0]}>
             <SquirrelModel 
                 swordTipRef={swordTipRef} swordBaseRef={swordBaseRef}
                 comboStep={comboStep} lastAttackTime={lastAttackTime} isMoving={currentSpeed > 0.5} 
