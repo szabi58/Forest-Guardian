@@ -5,7 +5,7 @@ import { RigidBody, RapierRigidBody, CuboidCollider, CylinderCollider, ConeColli
 import { Billboard, Text, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { GoogleGenAI } from "@google/genai";
-import { useGameStore } from '../store';
+import { useGameStore, liveEnemyPositions, liveTownChildPositions, liveTownNPCPositions } from '../store';
 import { BuildingData, TownNPCData, TownAnimalData, TownChildData } from '../types';
 import { getTerrainHeight } from './Environment';
 
@@ -211,24 +211,76 @@ const BuildingDoor: React.FC<{ playerRef: React.RefObject<THREE.Object3D>; build
     );
 };
 
-const BuildingWalls: React.FC<{ width: number, height: number, depth: number }> = ({ width, height, depth }) => {
+// Per-type color palettes so the town doesn't read as identical brown boxes
+const BUILDING_PALETTES: Record<string, { wall: string; trim: string; roof: string }> = {
+    HOUSE_SMALL: { wall: '#e6d7b8', trim: '#4a3222', roof: '#7b4030' },
+    SHOP:        { wall: '#dcc9a4', trim: '#3d2c1e', roof: '#5d6d3f' },
+    TAVERN:      { wall: '#d8c2ac', trim: '#402e20', roof: '#6d3b2a' },
+};
+
+const CottageWindow: React.FC<{ position: [number, number, number]; rotationY?: number; trim: string }> = ({ position, rotationY = 0, trim }) => (
+    <group position={position} rotation={[0, rotationY, 0]}>
+        <mesh castShadow><boxGeometry args={[1.1, 1.3, 0.12]} /><meshStandardMaterial color={trim} roughness={0.85} /></mesh>
+        <mesh position={[0, 0, 0.02]}><boxGeometry args={[0.85, 1.05, 0.12]} /><meshStandardMaterial color="#ffe9b3" emissive="#ffb85c" emissiveIntensity={0.55} /></mesh>
+        <mesh position={[0, 0, 0.09]}><boxGeometry args={[0.06, 1.05, 0.04]} /><meshStandardMaterial color={trim} /></mesh>
+        <mesh position={[0, 0, 0.09]}><boxGeometry args={[0.85, 0.06, 0.04]} /><meshStandardMaterial color={trim} /></mesh>
+        <mesh position={[0, -0.72, 0.06]} castShadow><boxGeometry args={[1.25, 0.12, 0.22]} /><meshStandardMaterial color={trim} /></mesh>
+    </group>
+);
+
+const BuildingWalls: React.FC<{ width: number, height: number, depth: number, buildingType?: string }> = ({ width, height, depth, buildingType = 'HOUSE_SMALL' }) => {
+    const pal = BUILDING_PALETTES[buildingType] ?? BUILDING_PALETTES.HOUSE_SMALL;
+    const wallProps = { color: pal.wall, roughness: 0.9 };
+    const trimProps = { color: pal.trim, roughness: 0.85 };
+    const beamW = 0.35;
     return (
         <group position={[0, height / 2, 0]}>
+            {/* Plaster walls */}
             <group position={[0, 0, -depth / 2]}>
-                <mesh><boxGeometry args={[width, height, 0.5]} /><meshStandardMaterial color="#5d4037" roughness={0.9} /></mesh>
+                <mesh castShadow receiveShadow><boxGeometry args={[width, height, 0.5]} /><meshStandardMaterial {...wallProps} /></mesh>
             </group>
-            <mesh position={[-width / 2, 0, 0]}><boxGeometry args={[0.5, height, depth]} /><meshStandardMaterial color="#5d4037" roughness={0.9} /></mesh>
-            <mesh position={[width / 2, 0, 0]}><boxGeometry args={[0.5, height, depth]} /><meshStandardMaterial color="#5d4037" roughness={0.9} /></mesh>
-            
+            <mesh position={[-width / 2, 0, 0]} castShadow receiveShadow><boxGeometry args={[0.5, height, depth]} /><meshStandardMaterial {...wallProps} /></mesh>
+            <mesh position={[width / 2, 0, 0]} castShadow receiveShadow><boxGeometry args={[0.5, height, depth]} /><meshStandardMaterial {...wallProps} /></mesh>
+
             <group position={[-4.0, 0, depth / 2]}>
-                <mesh><boxGeometry args={[2.0, height, 0.5]} /><meshStandardMaterial color="#5d4037" roughness={0.9} /></mesh>
+                <mesh castShadow receiveShadow><boxGeometry args={[2.0, height, 0.5]} /><meshStandardMaterial {...wallProps} /></mesh>
                 <FlowerBox position={[-0.5, -0.5, 0.35]} />
             </group>
             <group position={[4.0, 0, depth / 2]}>
-                <mesh><boxGeometry args={[2.0, height, 0.5]} /><meshStandardMaterial color="#5d4037" roughness={0.9} /></mesh>
+                <mesh castShadow receiveShadow><boxGeometry args={[2.0, height, 0.5]} /><meshStandardMaterial {...wallProps} /></mesh>
                 <FlowerBox position={[0.5, -0.5, 0.35]} />
             </group>
-            <mesh position={[0, height / 2 - 0.2, depth / 2]}><boxGeometry args={[width, 0.4, 0.5]} /><meshStandardMaterial color="#5d4037" roughness={0.9} /></mesh>
+            <mesh position={[0, height / 2 - 0.2, depth / 2]}><boxGeometry args={[width, 0.4, 0.5]} /><meshStandardMaterial {...wallProps} /></mesh>
+
+            {/* Timber framing: corner posts */}
+            {([[-1, -1], [-1, 1], [1, -1], [1, 1]] as const).map(([sx, sz], i) => (
+                <mesh key={`post${i}`} position={[sx * width / 2, 0, sz * depth / 2]} castShadow>
+                    <boxGeometry args={[beamW, height, beamW]} />
+                    <meshStandardMaterial {...trimProps} />
+                </mesh>
+            ))}
+            {/* Timber framing: top and mid rails around the walls */}
+            {[height / 2 - 0.15, 0.1].map((y, i) => {
+                const railH = i === 0 ? 0.3 : 0.22;
+                return (
+                    <group key={`rail${i}`}>
+                        <mesh position={[0, y, -depth / 2]} castShadow><boxGeometry args={[width + 0.2, railH, 0.62]} /><meshStandardMaterial {...trimProps} /></mesh>
+                        <mesh position={[0, y, depth / 2]} castShadow><boxGeometry args={[width + 0.2, railH, 0.62]} /><meshStandardMaterial {...trimProps} /></mesh>
+                        <mesh position={[-width / 2, y, 0]} castShadow><boxGeometry args={[0.62, railH, depth + 0.2]} /><meshStandardMaterial {...trimProps} /></mesh>
+                        <mesh position={[width / 2, y, 0]} castShadow><boxGeometry args={[0.62, railH, depth + 0.2]} /><meshStandardMaterial {...trimProps} /></mesh>
+                    </group>
+                );
+            })}
+
+            {/* Windows: two per side wall, two on the back, one above each front panel */}
+            <CottageWindow position={[-width / 2 - 0.08, 0.7, -1.8]} rotationY={-Math.PI / 2} trim={pal.trim} />
+            <CottageWindow position={[-width / 2 - 0.08, 0.7, 1.8]} rotationY={-Math.PI / 2} trim={pal.trim} />
+            <CottageWindow position={[width / 2 + 0.08, 0.7, -1.8]} rotationY={Math.PI / 2} trim={pal.trim} />
+            <CottageWindow position={[width / 2 + 0.08, 0.7, 1.8]} rotationY={Math.PI / 2} trim={pal.trim} />
+            <CottageWindow position={[-2.5, 0.7, -depth / 2 - 0.08]} rotationY={Math.PI} trim={pal.trim} />
+            <CottageWindow position={[2.5, 0.7, -depth / 2 - 0.08]} rotationY={Math.PI} trim={pal.trim} />
+            <CottageWindow position={[-4.0, 1.2, depth / 2 + 0.08]} trim={pal.trim} />
+            <CottageWindow position={[4.0, 1.2, depth / 2 + 0.08]} trim={pal.trim} />
         </group>
     );
 };
@@ -404,7 +456,7 @@ const Building: React.FC<{ data: BuildingData, playerRef: React.RefObject<THREE.
                     ) : isClinic ? (
                         <ClinicStructure width={wallWidth} height={wallHeight} depth={wallWidth} />
                     ) : (
-                        <BuildingWalls width={wallWidth} height={wallHeight} depth={wallWidth} />
+                        <BuildingWalls width={wallWidth} height={wallHeight} depth={wallWidth} buildingType={data.type} />
                     )}
                     <CuboidCollider args={[wallWidth / 2, wallHeight / 2, 0.25]} position={[0, wallHeight / 2, -wallWidth / 2]} />
                     <CuboidCollider args={[0.25, wallHeight / 2, wallWidth / 2]} position={[-wallWidth / 2, wallHeight / 2, 0]} />
@@ -437,10 +489,17 @@ const Building: React.FC<{ data: BuildingData, playerRef: React.RefObject<THREE.
                 <BuildingDoor playerRef={playerRef} buildingRotation={data.rotation} />
             </group>
             {!isLibrary && !isClinic && (
-                <mesh position={[0, foundationHeight + wallHeight + 2.0, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
-                    <coneGeometry args={[wallWidth * 0.9, 5, 4]} />
-                    <XRayMaterial buildingId={data.id} color="#3e2723" buildingPos={buildingWorldPos} />
-                </mesh>
+                <>
+                    <mesh position={[0, foundationHeight + wallHeight + 2.0, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
+                        <coneGeometry args={[wallWidth * 0.95, 5, 4]} />
+                        <XRayMaterial buildingId={data.id} color={(BUILDING_PALETTES[data.type] ?? BUILDING_PALETTES.HOUSE_SMALL).roof} buildingPos={buildingWorldPos} />
+                    </mesh>
+                    {/* Chimney with smoke-stained cap */}
+                    <group position={[2.4, foundationHeight + wallHeight + 3.2, -2.4]}>
+                        <mesh castShadow><boxGeometry args={[0.85, 2.6, 0.85]} /><meshStandardMaterial color="#8a5a48" roughness={0.95} /></mesh>
+                        <mesh position={[0, 1.4, 0]} castShadow><boxGeometry args={[1.05, 0.22, 1.05]} /><meshStandardMaterial color="#4b4b4b" roughness={0.9} /></mesh>
+                    </group>
+                </>
             )}
             <pointLight position={[0, foundationHeight + wallHeight - 1, 0]} intensity={25} color="#ffccaa" distance={15} />
         </group>
@@ -604,7 +663,7 @@ const WALL_HEIGHT = 2.2;
 const WALL_THICKNESS = 0.675;
 /** Barrier height so enemies cannot jump or be pushed over the fence; gates remain the only entrance. */
 const FENCE_BARRIER_HEIGHT = 4;
-const TORCH_SPACING = 48;
+const TORCH_SPACING = 28;
 const POST_HEIGHT_ABOVE_WALL = 0.85;
 
 const FenceTorch: React.FC<{ position: [number, number, number]; rotationY: number }> = ({ position, rotationY }) => {
@@ -664,6 +723,9 @@ const FenceTorch: React.FC<{ position: [number, number, number]; rotationY: numb
 
 const MIN_SEGMENT_LENGTH = 4;
 
+const STONE_TONES = ['#6a675f', '#75726a', '#5f5d57', '#7b786e'];
+const PILLAR_SPACING = 14;
+
 const Fence: React.FC<{ controlPoints: [number, number][] }> = ({ controlPoints }) => {
     const { segments, torchPositions } = useMemo(() => {
         const points = controlPoints.map(p => new THREE.Vector3(p[0], 0, p[1]));
@@ -701,19 +763,56 @@ const Fence: React.FC<{ controlPoints: [number, number][] }> = ({ controlPoints 
         return { segments: finalSegments, torchPositions: torchList };
     }, [controlPoints]);
 
+    // Stone pillars at regular intervals along the wall
+    const pillarPositions = useMemo(() => {
+        const pillars: [number, number, number][] = [];
+        let carry = PILLAR_SPACING / 2;
+        segments.forEach((seg) => {
+            let t = carry;
+            while (t < seg.length) {
+                const f = t / seg.length;
+                const x = seg.p1.x + (seg.p2.x - seg.p1.x) * f;
+                const z = seg.p1.z + (seg.p2.z - seg.p1.z) * f;
+                pillars.push([x, getTerrainHeight(x, z), z]);
+                t += PILLAR_SPACING;
+            }
+            carry = t - seg.length;
+        });
+        return pillars;
+    }, [segments]);
+
     return (
         <group>
             {segments.map((seg, i) => {
                 const baseY = (seg.p1.y + seg.p2.y) * 0.5;
+                const tone = STONE_TONES[i % STONE_TONES.length];
                 return (
                     <group key={i} position={[seg.center.x, baseY + WALL_HEIGHT / 2, seg.center.z]} rotation={[seg.rotation.x, seg.rotation.y, seg.rotation.z]}>
                         <mesh castShadow receiveShadow>
                             <boxGeometry args={[WALL_THICKNESS, WALL_HEIGHT, seg.length]} />
-                            <meshStandardMaterial color="#6e6e6e" roughness={0.95} />
+                            <meshStandardMaterial color={tone} roughness={0.95} />
+                        </mesh>
+                        {/* Cap stone running along the top */}
+                        <mesh position={[0, WALL_HEIGHT / 2 + 0.11, 0]} castShadow>
+                            <boxGeometry args={[WALL_THICKNESS + 0.3, 0.22, seg.length + 0.1]} />
+                            <meshStandardMaterial color="#55534c" roughness={0.9} />
                         </mesh>
                     </group>
                 );
             })}
+
+            {pillarPositions.map((p, i) => (
+                <group key={`pillar${i}`} position={p}>
+                    <mesh position={[0, (WALL_HEIGHT + 0.3) / 2, 0]} castShadow receiveShadow>
+                        <boxGeometry args={[1.0, WALL_HEIGHT + 0.3, 1.0]} />
+                        <meshStandardMaterial color="#5b584f" roughness={0.95} />
+                    </mesh>
+                    <mesh position={[0, WALL_HEIGHT + 0.42, 0]} castShadow>
+                        <boxGeometry args={[1.25, 0.22, 1.25]} />
+                        <meshStandardMaterial color="#4c4a43" roughness={0.9} />
+                    </mesh>
+                </group>
+            ))}
 
             {torchPositions.map((t, i) => (
                 <FenceTorch key={i} position={t.pos} rotationY={t.rotY} />
@@ -843,7 +942,6 @@ const GateGuard: React.FC<{ position: [number, number]; gateSide: 'west' | 'east
     const isWalkingRef = useRef(false);
     const [isWalking, setIsWalking] = useState(false);
     const [spearSwingStartTime, setSpearSwingStartTime] = useState<number | null>(null);
-    const enemies = useGameStore(s => s.enemies);
     const damageEnemy = useGameStore(s => s.damageEnemy);
     const setEnemyPushImpulse = useGameStore(s => s.setEnemyPushImpulse);
     const lastHit = useRef<Record<string, number>>({});
@@ -854,10 +952,12 @@ const GateGuard: React.FC<{ position: [number, number]; gateSide: 'west' | 'east
         const gx = posX.current;
         const gz = posZ.current;
 
+        // Read enemies non-reactively; positions come from the live map
+        const enemies = useGameStore.getState().enemies;
         const liveInRange: { e: typeof enemies[0]; dist: number; dx: number; dz: number }[] = [];
         enemies.forEach((e) => {
             if (e.isDead) return;
-            const [ex, , ez] = e.position;
+            const [ex, , ez] = liveEnemyPositions[e.id] ?? e.position;
             const dx = ex - gx;
             const dz = ez - gz;
             const distSq = dx * dx + dz * dz;
@@ -976,14 +1076,16 @@ const TownChild: React.FC<{ data: TownChildData }> = ({ data: initialData }) => 
         const posZ = pos.z;
         const others = townChildren.filter(c => c.id !== childData.id);
         const inRange = others.filter(c => {
-            const dx = c.position[0] - posX;
-            const dz = c.position[2] - posZ;
+            const [cx, , cz] = liveTownChildPositions[c.id] ?? c.position;
+            const dx = cx - posX;
+            const dz = cz - posZ;
             return dx * dx + dz * dz <= CHILD_CHASE_RANGE * CHILD_CHASE_RANGE;
         });
         if (inRange.length > 0 && Math.random() < 0.4) {
             const chase = inRange[Math.floor(Math.random() * inRange.length)];
-            targetX.current = chase.position[0];
-            targetZ.current = chase.position[2];
+            const [cx, , cz] = liveTownChildPositions[chase.id] ?? chase.position;
+            targetX.current = cx;
+            targetZ.current = cz;
         } else {
             targetX.current = TOWN_CHILD_BOUNDS.xMin + Math.random() * (TOWN_CHILD_BOUNDS.xMax - TOWN_CHILD_BOUNDS.xMin);
             targetZ.current = TOWN_CHILD_BOUNDS.zMin + Math.random() * (TOWN_CHILD_BOUNDS.zMax - TOWN_CHILD_BOUNDS.zMin);
@@ -1698,7 +1800,11 @@ const TownNPC: React.FC<{ data: TownNPCData; playerRef: React.RefObject<THREE.Ob
     
     // Direct store selection for better reactivity to specific NPC changes
     const npcData = useGameStore(s => s.townNPCs.find(n => n.id === initialData.id) || initialData);
-    const { activeDialoguePartner, setActiveDialoguePartner, updateTownNPCPosition, setTownNPCDialogue, gameTime, health, maxHealth, score, interactionRequestTick, buildings, isStanceActive, enemies, healPlayer, rechargeMana } = useGameStore();
+    // Subscribe only to values that should trigger re-renders; actions are stable
+    // and event-handler data is read via getState() at call time
+    const activeDialoguePartner = useGameStore(s => s.activeDialoguePartner);
+    const interactionRequestTick = useGameStore(s => s.interactionRequestTick);
+    const { setActiveDialoguePartner, updateTownNPCPosition, setTownNPCDialogue, healPlayer, rechargeMana } = useGameStore.getState();
     
     const [flash, setFlash] = useState(false);
     const [isNear, setIsNear] = useState(false);
@@ -1782,6 +1888,7 @@ const TownNPC: React.FC<{ data: TownNPCData; playerRef: React.RefObject<THREE.Ob
         if (npcData.role === 'Nurse') return; // Nurse stays at clinic
 
         const r = Math.random();
+        const buildings = useGameStore.getState().buildings;
         // 50% chance to go to a building, 50% to a random point
         if (r > 0.5 && buildings.length > 0) {
             const building = buildings[Math.floor(Math.random() * buildings.length)];
@@ -1919,8 +2026,12 @@ const TownNPC: React.FC<{ data: TownNPCData; playerRef: React.RefObject<THREE.Ob
         setIsThinking(true);
 
         try {
+            const { gameTime, enemies, health, maxHealth, isStanceActive } = useGameStore.getState();
             const timeOfDay = gameTime < 0.3 ? "morning" : gameTime < 0.7 ? "day" : "night";
-            const nearbyEnemies = enemies.filter(e => !e.isDead && new THREE.Vector3(...e.position).distanceTo(new THREE.Vector3(...npcData.position)) < 30).length;
+            const npcPos = rb.current
+                ? new THREE.Vector3(rb.current.translation().x, rb.current.translation().y, rb.current.translation().z)
+                : new THREE.Vector3(...npcData.position);
+            const nearbyEnemies = enemies.filter(e => !e.isDead && new THREE.Vector3(...(liveEnemyPositions[e.id] ?? e.position)).distanceTo(npcPos) < 30).length;
             const isPlayerHurt = health < maxHealth * 0.5;
             const isPlayerAggressive = isStanceActive;
 

@@ -21,7 +21,6 @@ import { useGameStore } from '../store';
  */
 
 export const GamepadHandler: React.FC = () => {
-  const store = useGameStore();
   const lastButtons = useRef<boolean[]>([]);
   const chargeStartTime = useRef<number | null>(null);
   
@@ -53,8 +52,11 @@ export const GamepadHandler: React.FC = () => {
   useFrame((_, delta) => {
     const gamepads = navigator.getGamepads();
     const gp = gamepads[0]; // Primary controller
-    
+
     if (!gp) return;
+
+    // Read the store non-reactively — this component renders nothing
+    const store = useGameStore.getState();
 
     // 1. ANALOG STICKS (with deadzone)
     const DEADZONE = 0.15;

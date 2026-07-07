@@ -118,13 +118,30 @@ const applyWindAndAO = (shader: any, isLeaf: boolean) => {
   );
 };
 
+// Shared, cached materials for all trees: previously every trunk/foliage cluster
+// created its own material + useFrame updater (~1000+ of each across the forest).
+// One material per color is enough; a single useFrame in Environment drives the wind.
+const treeMaterialCache = new Map<string, THREE.Material>();
+const windShaders: { uniforms: { uTime: { value: number } } }[] = [];
+
+const getTreeMaterial = (color: string, isLeaf: boolean): THREE.Material => {
+  const key = `${color}|${isLeaf ? 'leaf' : 'bark'}`;
+  let mat = treeMaterialCache.get(key);
+  if (!mat) {
+    mat = isLeaf
+      ? new THREE.MeshToonMaterial({ color, alphaTest: 0.5, side: THREE.DoubleSide })
+      : new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
+    mat.onBeforeCompile = (shader) => {
+      applyWindAndAO(shader, isLeaf);
+      if (shader?.uniforms?.uTime) windShaders.push(shader as any);
+    };
+    treeMaterialCache.set(key, mat);
+  }
+  return mat;
+};
+
 const FoliageCluster: React.FC<{ color: string; count?: number }> = ({ color, count = 5 }) => {
-  const leafMat = useMemo(() => {
-    const mat = new THREE.MeshToonMaterial({ color, alphaTest: 0.5, side: THREE.DoubleSide });
-    mat.onBeforeCompile = (s) => applyWindAndAO(s, true);
-    return mat;
-  }, [color]);
-  useFrame((state) => { if (leafMat.userData.shader && leafMat.userData.shader.uniforms.uTime) leafMat.userData.shader.uniforms.uTime.value = state.clock.elapsedTime; });
+  const leafMat = getTreeMaterial(color, true);
   return (
     <group>
       {Array.from({ length: count }).map((_, i) => (
@@ -138,12 +155,7 @@ const FoliageCluster: React.FC<{ color: string; count?: number }> = ({ color, co
 };
 
 const Trunk: React.FC<{ height: number; radius: number; color: string }> = ({ height, radius, color }) => {
-  const barkMat = useMemo(() => {
-    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
-    mat.onBeforeCompile = (shader) => applyWindAndAO(shader, false);
-    return mat;
-  }, [color]);
-  useFrame((state) => { if (barkMat.userData.shader && barkMat.userData.shader.uniforms.uTime) barkMat.userData.shader.uniforms.uTime.value = state.clock.elapsedTime; });
+  const barkMat = getTreeMaterial(color, false);
   return (
     <mesh castShadow receiveShadow position={[0, height / 2, 0]}>
       <cylinderGeometry args={[radius * 0.7, radius, height, 8, 4]} onUpdate={(self) => self.computeBoundingSphere()} />
@@ -244,15 +256,18 @@ const Grass: React.FC = () => {
   const lastMaskCenter = useRef(new THREE.Vector3(0, 0, 0));
   const buildings = useGameStore(s => s.buildings);
   
-  const { canvas, context, texture } = useMemo(() => {
+  const { canvas, context, texture, scratchCanvas, scratchCtx } = useMemo(() => {
     const can = document.createElement('canvas'); can.width = CANVAS_RESOLUTION; can.height = CANVAS_RESOLUTION;
     const ctx = can.getContext('2d', { alpha: false })!; ctx.fillStyle = 'black'; ctx.fillRect(0, 0, CANVAS_RESOLUTION, CANVAS_RESOLUTION);
-    return { canvas: can, context: ctx, texture: new THREE.CanvasTexture(can) };
+    // Persistent scratch buffer for recentering the mask (was allocated per frame)
+    const scratch = document.createElement('canvas'); scratch.width = CANVAS_RESOLUTION; scratch.height = CANVAS_RESOLUTION;
+    return { canvas: can, context: ctx, texture: new THREE.CanvasTexture(can), scratchCanvas: scratch, scratchCtx: scratch.getContext('2d')! };
   }, []);
 
   const cutGrassAt = useCallback((x1: number, z1: number, radius: number, strength: number, x2?: number, z2?: number) => {
     const toCanvasSpace = (val: number, center: number) => ((val - center) / MASK_SIZE + 0.5) * CANVAS_RESOLUTION;
-    const cx = maskCenter.current.x; const cz = maskCenter.current.z;
+    // Use the canvas's actual center (last recenter point), not the raw player position
+    const cx = lastMaskCenter.current.x; const cz = lastMaskCenter.current.z;
     const u1 = toCanvasSpace(x1, cx); const v1 = toCanvasSpace(z1, cz);
     const pxRadius = (radius / MASK_SIZE) * CANVAS_RESOLUTION;
     context.strokeStyle = 'white'; context.fillStyle = 'white'; context.lineCap = 'round'; context.lineWidth = pxRadius * 2; context.globalAlpha = strength;
@@ -368,18 +383,20 @@ const Grass: React.FC = () => {
     player.getWorldPosition(maskCenter.current);
     const dx = maskCenter.current.x - lastMaskCenter.current.x;
     const dz = maskCenter.current.z - lastMaskCenter.current.z;
-    if (Math.abs(dx) > 0.01 || Math.abs(dz) > 0.01) {
+    // Recenter only after ~1 unit of travel (was every frame, allocating a canvas each time)
+    if (Math.abs(dx) > 1.0 || Math.abs(dz) > 1.0) {
         const shiftX = -(dx / MASK_SIZE) * CANVAS_RESOLUTION; const shiftY = -(dz / MASK_SIZE) * CANVAS_RESOLUTION;
-        const tempCanvas = document.createElement('canvas'); tempCanvas.width = CANVAS_RESOLUTION; tempCanvas.height = CANVAS_RESOLUTION;
-        tempCanvas.getContext('2d')!.drawImage(canvas, 0, 0);
-        context.fillStyle = 'black'; context.fillRect(0, 0, CANVAS_RESOLUTION, CANVAS_RESOLUTION); context.drawImage(tempCanvas, shiftX, shiftY);
+        scratchCtx.clearRect(0, 0, CANVAS_RESOLUTION, CANVAS_RESOLUTION);
+        scratchCtx.drawImage(canvas, 0, 0);
+        context.globalAlpha = 1;
+        context.fillStyle = 'black'; context.fillRect(0, 0, CANVAS_RESOLUTION, CANVAS_RESOLUTION); context.drawImage(scratchCanvas, shiftX, shiftY);
         lastMaskCenter.current.copy(maskCenter.current); texture.needsUpdate = true;
     }
     if (state.clock.elapsedTime % 1 < 0.02) {
       context.globalAlpha = 0.005; context.fillStyle = 'black'; context.fillRect(0, 0, CANVAS_RESOLUTION, CANVAS_RESOLUTION); texture.needsUpdate = true;
     }
     if (material.userData.shader && material.userData.shader.uniforms.uTime) {
-      material.userData.shader.uniforms.uTime.value = state.clock.elapsedTime; material.userData.shader.uniforms.uMaskCenter.value.copy(maskCenter.current);
+      material.userData.shader.uniforms.uTime.value = state.clock.elapsedTime; material.userData.shader.uniforms.uMaskCenter.value.copy(lastMaskCenter.current);
     }
   });
 
@@ -393,6 +410,12 @@ export const Environment: React.FC = () => {
   const envObjs = useGameStore(s => s.environmentObjects);
   const size = TERRAIN_SIZE;
   const segs = 150;
+
+  // Single wind clock for every shared tree material
+  useFrame((state) => {
+    const t = state.clock.elapsedTime;
+    for (let i = 0; i < windShaders.length; i++) windShaders[i].uniforms.uTime.value = t;
+  });
   // Single terrain geometry with Y-up so collider and visual match (avoids trimesh rotation issues)
   const geo = useMemo(() => {
     const g = new THREE.PlaneGeometry(size, size, segs, segs);

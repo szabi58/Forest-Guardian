@@ -1,8 +1,45 @@
 
 import React, { useRef, useState, useEffect } from 'react';
-import { useGameStore } from '../store';
+import { useGameStore, liveEnemyPositions, livePlayerPosition, BOSS_NAME } from '../store';
 import { Joystick } from './Joystick';
 import { Vector2 } from 'three';
+
+const BOSS_BAR_RANGE = 70;
+
+// Boss health bar: fades in when the roaming T-Rex is close to the player
+const BossBar: React.FC = () => {
+  const boss = useGameStore(s => s.enemies.find(e => e.type === 'TREX' && !e.isDead));
+  const [isNear, setIsNear] = useState(false);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const b = useGameStore.getState().enemies.find(e => e.type === 'TREX' && !e.isDead);
+      if (!b) { setIsNear(false); return; }
+      const [bx, , bz] = liveEnemyPositions[b.id] ?? b.position;
+      const dx = bx - livePlayerPosition[0];
+      const dz = bz - livePlayerPosition[2];
+      setIsNear(dx * dx + dz * dz < BOSS_BAR_RANGE * BOSS_BAR_RANGE);
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (!boss || !isNear) return null;
+
+  return (
+    <div className="absolute top-6 left-1/2 -translate-x-1/2 w-[520px] max-w-[80vw] z-30 pointer-events-none">
+      <div className="text-center text-red-300 text-xs font-black uppercase tracking-[0.5em] mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.9)]">{BOSS_NAME}</div>
+      <div className="w-full bg-black/60 h-4 border border-red-900/80 relative overflow-hidden backdrop-blur-md">
+        <div
+          className="h-full bg-gradient-to-r from-red-950 via-red-700 to-red-500 transition-all duration-300 ease-out"
+          style={{ width: `${(boss.hp / boss.maxHp) * 100}%` }}
+        />
+        <div className="absolute inset-0 flex items-center justify-end px-2">
+          <span className="text-[9px] font-mono text-white/70">{Math.ceil(boss.hp)} / {boss.maxHp}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const UI: React.FC = () => {
   const { 
@@ -28,6 +65,7 @@ export const UI: React.FC = () => {
 
   return (
     <div className="absolute inset-0 pointer-events-none z-10 flex flex-col justify-between p-6 overflow-hidden font-sans">
+      <BossBar />
       {/* Pause Menu */}
       {isPaused && (
         <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/60 backdrop-blur-md text-white pointer-events-auto">

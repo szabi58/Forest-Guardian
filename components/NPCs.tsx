@@ -2,7 +2,7 @@
 import React, { useRef, useState, useMemo, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { RigidBody, RapierRigidBody, CuboidCollider } from '@react-three/rapier';
-import { useGameStore, getEnemyPositionClampedOutsideTown } from '../store';
+import { useGameStore, getEnemyPositionClampedOutsideTown, liveEnemyPositions, BOSS_RESPAWN_DELAY_MS } from '../store';
 import { EnemyData } from '../types';
 import * as THREE from 'three';
 
@@ -529,11 +529,15 @@ const NPC: React.FC<{ data: EnemyData; playerRef: React.RefObject<THREE.Object3D
   const [hitProgress, setHitProgress] = useState(0);
   const lastHp = useRef(data.hp);
   const lastAttackTime = useRef(0);
-  const { damagePlayer, updateEnemyPosition, consumeEnemyPushImpulse } = useGameStore();
+  // Actions are stable references — getState() avoids subscribing this component
+  // to every store change (which previously re-rendered all enemies each frame)
+  const { damagePlayer, updateEnemyPosition, consumeEnemyPushImpulse } = useGameStore.getState();
   const [isMoving, setIsMoving] = useState(false);
   const [isAttacking, setIsAttacking] = useState(false);
   const tempVec = useMemo(() => new THREE.Vector3(), []);
   const playerWorldPos = useMemo(() => new THREE.Vector3(), []);
+  const wanderTarget = useRef<{ x: number; z: number } | null>(null);
+  const wanderRepickAt = useRef(0);
 
   // OBSERVE HEALTH CHANGES
   useEffect(() => {
@@ -594,26 +598,51 @@ const NPC: React.FC<{ data: EnemyData; playerRef: React.RefObject<THREE.Object3D
 
     const dist = Math.sqrt((px - playerWorldPos.x) ** 2 + (pz - playerWorldPos.z) ** 2);
     const dir = tempVec.set(playerWorldPos.x - px, 0, playerWorldPos.z - pz).normalize();
-    
-    // Trex has much larger aggro range
-    const aggroRange = data.type === 'TREX' ? 120 : 45;
-    
+
+    const isTrex = data.type === 'TREX';
+    const aggroRange = isTrex ? 55 : 45;
+    const attackReach = isTrex ? 5.5 : 3.5;
+    const now = state.clock.elapsedTime;
+
     if (dist < aggroRange && dist > 1.8) {
-      const speed = data.type === 'TREX' ? ENEMY_SPEED * 1.6 : ENEMY_SPEED;
+      const speed = isTrex ? ENEMY_SPEED * 1.9 : ENEMY_SPEED;
       rb.setLinvel({ x: dir.x * speed, y: rb.linvel().y, z: dir.z * speed }, true);
       const angle = Math.atan2(dir.x, dir.z);
       rb.setRotation(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), angle), true);
+      setIsMoving(true);
+    } else if (isTrex) {
+      // Boss roams the wilds when the player is out of range
+      const wt = wanderTarget.current;
+      const arrived = wt && Math.sqrt((wt.x - px) ** 2 + (wt.z - pz) ** 2) < 3;
+      if (!wt || arrived || now > wanderRepickAt.current) {
+        const angle = Math.random() * Math.PI * 2;
+        const r = 30 + Math.random() * 40;
+        let tx = THREE.MathUtils.clamp(px + Math.cos(angle) * r, -170, 170);
+        let tz = THREE.MathUtils.clamp(pz + Math.sin(angle) * r, -170, 170);
+        [tx, tz] = getEnemyPositionClampedOutsideTown(tx, tz);
+        wanderTarget.current = { x: tx, z: tz };
+        wanderRepickAt.current = now + 8 + Math.random() * 6;
+      }
+      const t = wanderTarget.current!;
+      const wdx = t.x - px;
+      const wdz = t.z - pz;
+      const wdist = Math.sqrt(wdx * wdx + wdz * wdz) || 1;
+      const roamSpeed = ENEMY_SPEED * 0.9;
+      rb.setLinvel({ x: (wdx / wdist) * roamSpeed, y: rb.linvel().y, z: (wdz / wdist) * roamSpeed }, true);
+      rb.setRotation(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(wdx, wdz)), true);
       setIsMoving(true);
     } else {
       rb.setLinvel({ x: 0, y: rb.linvel().y, z: 0 }, true);
       setIsMoving(false);
     }
 
-    const now = state.clock.elapsedTime;
-    if (dist < 3.5 && now - lastAttackTime.current > 1.5) {
+    if (dist < attackReach && now - lastAttackTime.current > 1.5) {
       lastAttackTime.current = now;
-      if (data.type === 'TREX') setIsAttacking(true);
-      damagePlayer(data.type === 'TREX' ? 30 : 8);
+      if (isTrex) {
+        setIsAttacking(true);
+        useGameStore.getState().triggerHitImpact(0.9, 60);
+      }
+      damagePlayer(isTrex ? (data.isBoss ? 35 : 25) : 8);
     }
   });
 
@@ -660,8 +689,8 @@ const NPC: React.FC<{ data: EnemyData; playerRef: React.RefObject<THREE.Object3D
       userData={{ type: 'ENEMY', id: data.id }}
       enabledRotations={[false, true, false]}
     >
-      {!data.isDead && <CuboidCollider args={[data.type === 'TREX' ? 1.5 : 0.5, 1, data.type === 'TREX' ? 1.5 : 0.5]} position={[0, 1, 0]} />}
-      <group ref={fallGroupRef}>
+      {!data.isDead && <CuboidCollider args={data.type === 'TREX' ? (data.isBoss ? [2.2, 2.6, 2.2] : [1.5, 1, 1.5]) : [0.5, 1, 0.5]} position={[0, data.isBoss ? 2.6 : 1, 0]} />}
+      <group ref={fallGroupRef} scale={data.isBoss ? 1.45 : 1}>
         <DeadSplitModel isDead={!!data.isDead} killedBySword={!!data.killedBySword} noSplit={data.type === 'TREX'}>
           {renderModel()}
         </DeadSplitModel>
@@ -671,20 +700,41 @@ const NPC: React.FC<{ data: EnemyData; playerRef: React.RefObject<THREE.Object3D
   );
 };
 
-const TrexManager: React.FC = () => {
-    const enemies = useGameStore(s => s.enemies);
-    const spawnTrex = useGameStore(s => s.spawnTrex);
-    const lastCheckTime = useRef(0);
+// Re-render an enemy only when its own record changes (damage, death) —
+// untouched enemies keep the same object reference through store updates
+const MemoNPC = React.memo(NPC, (prev, next) => prev.data === next.data);
 
-    useFrame((state) => {
-        if (state.clock.elapsedTime - lastCheckTime.current > 5) {
-            lastCheckTime.current = state.clock.elapsedTime;
-            const aliveTrexs = enemies.filter(e => e.type === 'TREX' && !e.isDead).length;
-            if (aliveTrexs < 2) {
-                spawnTrex();
+// Keeps the world populated: respawns slimes/rabbits toward their target counts,
+// removes old corpses, and brings the boss back after a delay
+const SLIME_TARGET = 22;
+const RABBIT_TARGET = 22;
+
+const EnemyManager: React.FC = () => {
+    const bossDownSince = useRef<number | null>(null);
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+            const s = useGameStore.getState();
+            if (s.isPaused || s.isGameOver) return;
+
+            s.cleanupDeadEnemies();
+
+            const alive = (type: string) => s.enemies.filter(e => e.type === type && !e.isDead).length;
+            if (alive('SLIME') < SLIME_TARGET) s.spawnEnemy('SLIME');
+            if (alive('RABBIT') < RABBIT_TARGET) s.spawnEnemy('RABBIT');
+
+            const bossAlive = s.enemies.some(e => e.type === 'TREX' && !e.isDead);
+            if (bossAlive) {
+                bossDownSince.current = null;
+            } else if (bossDownSince.current === null) {
+                bossDownSince.current = Date.now();
+            } else if (Date.now() - bossDownSince.current > BOSS_RESPAWN_DELAY_MS) {
+                s.spawnTrex();
+                bossDownSince.current = null;
             }
-        }
-    });
+        }, 3000);
+        return () => clearInterval(interval);
+    }, []);
 
     return null;
 };
@@ -693,9 +743,9 @@ export const NPCSystem: React.FC<{ playerRef: React.RefObject<THREE.Object3D> }>
   const enemies = useGameStore(s => s.enemies);
   return (
     <>
-      <TrexManager />
+      <EnemyManager />
       {enemies.map(enemy => (
-        <NPC key={enemy.id} data={enemy} playerRef={playerRef} />
+        <MemoNPC key={enemy.id} data={enemy} playerRef={playerRef} />
       ))}
     </>
   );

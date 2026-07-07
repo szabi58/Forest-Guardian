@@ -204,6 +204,8 @@ export interface EnemyData {
   hp: number;
   maxHp: number;
   isDead?: boolean;
+  isBoss?: boolean;
+  deathTime?: number;
   killedBySword?: boolean;
   killedByKamehameha?: boolean;
 }

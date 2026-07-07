@@ -4,7 +4,7 @@ import { useFrame } from '@react-three/fiber';
 import { RigidBody, RapierRigidBody, CapsuleCollider, useRapier } from '@react-three/rapier';
 import { useKeyboardControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { useGameStore } from '../store';
+import { useGameStore, liveEnemyPositions, liveTownNPCPositions, livePlayerPosition } from '../store';
 import { getTerrainHeight } from './Environment';
 
 const MOVEMENT_SPEED = 12;
@@ -469,6 +469,24 @@ const DreadSword = React.forwardRef<THREE.Group, { isAttacking: boolean; isSpinn
   );
 });
 
+// --- BODY LAYOUT / GAIT CONSTANTS ---
+const BODY_Y = 0.85;   // torso group rest height
+const HIP_Y = 0.52;    // leg pivot height; boot soles rest exactly at y=0
+const LEG_REACH = 0.52;
+
+// Sword swing easing: brief windup (negative = pull back), explosive strike, settle.
+// Input is linear 0..1 attack progress; output sweeps -0.3 (windup peak) -> 1 (swing done).
+const SWING_WINDUP_END = 0.18;
+const SWING_STRIKE_END = 0.52;
+const swingEase = (p: number): number => {
+  if (p < SWING_WINDUP_END) return -0.3 * Math.sin((p / SWING_WINDUP_END) * Math.PI * 0.5);
+  if (p < SWING_STRIKE_END) {
+    const k = (p - SWING_WINDUP_END) / (SWING_STRIKE_END - SWING_WINDUP_END);
+    return -0.3 + 1.3 * (1 - Math.pow(1 - k, 4));
+  }
+  return 1;
+};
+
 interface SquirrelModelProps {
   comboStep: number;
   lastAttackTime: number;
@@ -494,8 +512,10 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
 }) => {
   const leftLegRef = useRef<THREE.Group>(null);
   const rightLegRef = useRef<THREE.Group>(null);
-  const leftFootRef = useRef<THREE.Mesh>(null);
-  const rightFootRef = useRef<THREE.Mesh>(null);
+  const leftKneeRef = useRef<THREE.Group>(null);
+  const rightKneeRef = useRef<THREE.Group>(null);
+  const leftFootRef = useRef<THREE.Group>(null);
+  const rightFootRef = useRef<THREE.Group>(null);
   const leftArmRef = useRef<THREE.Group>(null);
   const rightArmRef = useRef<THREE.Group>(null);
   const swordPivotRef = useRef<THREE.Group>(null);
@@ -507,6 +527,7 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
   const isHitStopping = useGameStore(s => s.isHitStopping);
   const dodgeRotation = useRef(0);
   const [attackProgress, setAttackProgress] = useState(0);
+  const tmpVec3 = useMemo(() => new THREE.Vector3(), []);
 
   // Procedural Animation States
   const jumpStretch = useRef(1);
@@ -517,15 +538,19 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
   const walkCycle = useRef(0);
   const lastJumpKeyDown = useRef(false);
 
-  // Materials
-  const furMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: '#8B5A2B', roughness: 1.0 }), []); // Brown Fur
-  const skinMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: '#D2B48C', roughness: 0.8 }), []); // Light Tan for snout/ears
-  const armorWhiteMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#F8F9FA', roughness: 0.3, metalness: 0.1 }), []);
-  const armorBlueMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#1E40AF', roughness: 0.4 }), []);
-  const armorGoldMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#D97706', roughness: 0.4, metalness: 0.5 }), []);
-  const eyeMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#FF0000', emissive: '#FF0000', emissiveIntensity: 2.5 }), []);
-  const hornMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#991B1B', roughness: 0.3 }), []);
-  const noseMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#3E2723', roughness: 0.5 }), []);
+  // Materials — russet squirrel + classic Saiyan armor (white cuirass, gold pads, royal-blue undersuit)
+  const furMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: '#96602e', roughness: 0.95 }), []);
+  const furDarkMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: '#7a4c22', roughness: 0.95 }), []);
+  const bellyMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: '#e3cba4', roughness: 0.9 }), []);
+  const armorWhiteMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#f2f4f7', roughness: 0.25, metalness: 0.15 }), []);
+  const suitBlueMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#1e3f9e', roughness: 0.6 }), []);
+  const armorGoldMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#e0a92e', roughness: 0.35, metalness: 0.45 }), []);
+  const eyeMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#17110b', roughness: 0.35 }), []);
+  const eyeShineMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.2 }), []);
+  const browMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#4a2e14', roughness: 0.9 }), []);
+  const noseMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#2f2320', roughness: 0.5 }), []);
+  const earInnerMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#c99b74', roughness: 0.9 }), []);
+  const toothMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#fffaf0', roughness: 0.4 }), []);
 
   useFrame((state, delta) => {
     if (isHitStopping) return;
@@ -572,9 +597,9 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
     // Pose tweaks per jump phase
     if (bodyRef.current) {
         if (jumpPhase.current === 'takeoff') {
-            bodyRef.current.position.y = THREE.MathUtils.lerp(bodyRef.current.position.y, 0.5, 0.3);
+            bodyRef.current.position.y = THREE.MathUtils.lerp(bodyRef.current.position.y, BODY_Y - 0.15, 0.3);
         } else if (jumpPhase.current === 'air') {
-            bodyRef.current.position.y = THREE.MathUtils.lerp(bodyRef.current.position.y, 0.8, 0.2);
+            bodyRef.current.position.y = THREE.MathUtils.lerp(bodyRef.current.position.y, BODY_Y + 0.1, 0.2);
         }
     }
     if (leftLegRef.current && rightLegRef.current) {
@@ -595,20 +620,19 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
       dodgeRotation.current += delta * dodgeRollSpeed;
       if (bodyRef.current) {
         bodyRef.current.rotation.x = dodgeRotation.current;
-        bodyRef.current.position.y = 0.5;
+        bodyRef.current.position.y = 0.62;
       }
     } else {
       dodgeRotation.current = 0;
       if (bodyRef.current) {
         // Snap to landed pose so we don't lerp backwards after a full forward roll
-        bodyRef.current.rotation.x = isMoving ? 0.2 : 0;
+        bodyRef.current.rotation.x = isMoving ? 0.12 : 0;
         if (isSpinning) {
             const spinProgress = Math.min(timeSinceAttack / SPIN_DURATION, 1);
             bodyRef.current.rotation.y = THREE.MathUtils.smoothstep(spinProgress, 0, 1) * Math.PI * 2;
-        } else {
+        } else if (!isAttacking) {
             bodyRef.current.rotation.y = THREE.MathUtils.lerp(bodyRef.current.rotation.y, 0, 0.2);
         }
-        bodyRef.current.position.y = THREE.MathUtils.lerp(bodyRef.current.position.y, isStanceActive ? 0.5 : 0.7, 0.1);
       }
     }
 
@@ -636,75 +660,93 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
     // --- WALKING ANIMATION ---
     // Drive this purely from actual movement speed so it always plays when you move,
     // even if grounding flags are a bit off.
+    const crouch = isStanceActive ? 0.14 : 0;
     const isWalkingNow = moveSpeed > 0.1 && !isDodging;
     if (isWalkingNow) {
         const speed01 = THREE.MathUtils.clamp(moveSpeed / 12, 0, 1);
-        const cycleSpeed = THREE.MathUtils.lerp(8, 14, speed01);
-        const legAmp = THREE.MathUtils.lerp(0.55, 1.1, speed01);
-        const stepLift = THREE.MathUtils.lerp(0.02, 0.09, speed01);
-        const stepFwd = THREE.MathUtils.lerp(0.03, 0.12, speed01);
+        const cycleSpeed = THREE.MathUtils.lerp(7, 13, speed01);
+        const hipAmp = THREE.MathUtils.lerp(0.3, 0.52, speed01);
+        const stepLift = THREE.MathUtils.lerp(0.05, 0.13, speed01);
+        const stride = THREE.MathUtils.lerp(0.04, 0.1, speed01);
+        const kneeAmp = THREE.MathUtils.lerp(0.5, 0.95, speed01);
 
-        // Advance walk cycle based on speed so legs sync with movement
         walkCycle.current += delta * cycleSpeed;
-        
-        const baseLeft = { x: -0.18, y: 0.35, z: 0 };
-        const baseRight = { x: 0.18, y: 0.35, z: 0 };
 
         const phaseL = walkCycle.current;
-        const phaseR = walkCycle.current + Math.PI; // right leg opposite phase
+        const phaseR = walkCycle.current + Math.PI;
 
-        const swingL = Math.sin(phaseL) * legAmp;
-        const swingR = Math.sin(phaseR) * legAmp;
-        // When leg swings forward (positive sin), raise it slightly
-        const liftL = Math.max(0, Math.sin(phaseL)) * stepLift;
-        const liftR = Math.max(0, Math.sin(phaseR)) * stepLift;
-        // Move feet forward/back along local Z so one goes forward while the other goes back
-        const strideL = Math.cos(phaseL) * stepFwd;
-        const strideR = Math.cos(phaseR) * stepFwd;
+        const animateLeg = (
+            phase: number, baseX: number,
+            leg: THREE.Group | null, knee: THREE.Group | null, foot: THREE.Group | null
+        ) => {
+            if (!leg) return;
+            const s = Math.sin(phase);
+            const swing = s * hipAmp;
+            // Swing-forward leg lifts and bends its knee; support leg stays straight.
+            const lift = Math.max(0, s) * stepLift;
+            const kneeBend = Math.max(0, s) * kneeAmp;
+            // Planted leg: pull the whole leg down by the arc height so the sole
+            // stays on the ground instead of sweeping above it (the old "floating").
+            const plantComp = s < 0 ? -(1 - Math.cos(swing)) * LEG_REACH : 0;
+            leg.rotation.x = swing;
+            leg.position.set(baseX, HIP_Y + lift + plantComp, Math.cos(phase) * stride);
+            if (knee) knee.rotation.x = kneeBend;
+            // Keep the sole level with the ground through the cycle
+            if (foot) foot.rotation.x = -(swing + kneeBend) * 0.7;
+        };
 
-        // Legs: clean oppositional gait
-        if (leftLegRef.current) {
-            leftLegRef.current.rotation.x = swingL;
-            leftLegRef.current.position.set(baseLeft.x, baseLeft.y + liftL, baseLeft.z + strideL);
+        animateLeg(phaseL, -0.18, leftLegRef.current, leftKneeRef.current, leftFootRef.current);
+        animateLeg(phaseR, 0.18, rightLegRef.current, rightKneeRef.current, rightFootRef.current);
+
+        // Arms: opposite to legs, with a touch of sideways sway
+        const armSwing = THREE.MathUtils.lerp(0.35, 0.7, speed01);
+        if (leftArmRef.current) {
+            leftArmRef.current.rotation.x = Math.sin(phaseR) * armSwing;
+            leftArmRef.current.rotation.z = 0.1 + Math.sin(phaseR) * 0.05;
         }
-        if (rightLegRef.current) {
-            rightLegRef.current.rotation.x = swingR;
-            rightLegRef.current.position.set(baseRight.x, baseRight.y + liftR, baseRight.z + strideR);
-        }
+        if (rightArmRef.current && !isAttacking && !isSpinning) rightArmRef.current.rotation.x = Math.sin(phaseL) * armSwing;
 
-        // Feet: counter-rotate a bit so they don't look like they're "hinged" too much
-        if (leftFootRef.current) leftFootRef.current.rotation.x = -swingL * 0.4;
-        if (rightFootRef.current) rightFootRef.current.rotation.x = -swingR * 0.4;
-        
-        // Arms: Opposite to legs (Left Arm moves with Right Leg)
-        const armSwing = 0.6;
-        if (leftArmRef.current) leftArmRef.current.rotation.x = Math.sin(phaseR) * armSwing;
-        if (rightArmRef.current && !isAttacking) rightArmRef.current.rotation.x = Math.sin(phaseL) * armSwing;
-
-        // Body Bob & Sway (driven by walk cycle) - reduced for less camera shake
+        // Body: dip slightly on each foot contact (|cos| peaks at contact), light sway
         if (bodyRef.current) {
-            bodyRef.current.position.y = 0.65 + Math.sin(walkCycle.current * 2) * 0.01;
-            bodyRef.current.rotation.z = Math.cos(walkCycle.current) * 0.02;
+            bodyRef.current.position.y = BODY_Y - crouch - Math.abs(Math.cos(walkCycle.current)) * 0.035;
+            bodyRef.current.rotation.z = Math.cos(walkCycle.current) * 0.025;
         }
     } else if (!isGrounded) {
-        if (leftLegRef.current) leftLegRef.current.rotation.x = 0.3;
-        if (rightLegRef.current) rightLegRef.current.rotation.x = -0.3;
-        if (leftFootRef.current) leftFootRef.current.rotation.x = 0;
-        if (rightFootRef.current) rightFootRef.current.rotation.x = 0;
-        if (bodyRef.current) bodyRef.current.position.y = 0.7; // Reset height in air
+        // Airborne tuck: legs asymmetric, knees bent
+        if (leftLegRef.current) {
+            leftLegRef.current.rotation.x = THREE.MathUtils.lerp(leftLegRef.current.rotation.x, 0.5, 0.2);
+            leftLegRef.current.position.lerp(tmpVec3.set(-0.18, HIP_Y + 0.06, 0.02), 0.2);
+        }
+        if (rightLegRef.current) {
+            rightLegRef.current.rotation.x = THREE.MathUtils.lerp(rightLegRef.current.rotation.x, -0.3, 0.2);
+            rightLegRef.current.position.lerp(tmpVec3.set(0.18, HIP_Y + 0.03, -0.02), 0.2);
+        }
+        if (leftKneeRef.current) leftKneeRef.current.rotation.x = THREE.MathUtils.lerp(leftKneeRef.current.rotation.x, 0.9, 0.2);
+        if (rightKneeRef.current) rightKneeRef.current.rotation.x = THREE.MathUtils.lerp(rightKneeRef.current.rotation.x, 0.5, 0.2);
+        if (leftFootRef.current) leftFootRef.current.rotation.x = -0.3;
+        if (rightFootRef.current) rightFootRef.current.rotation.x = -0.2;
+        if (bodyRef.current) bodyRef.current.position.y = BODY_Y;
     } else {
-        // Idle
-        if (leftLegRef.current) leftLegRef.current.rotation.x = THREE.MathUtils.lerp(leftLegRef.current.rotation.x, 0, 0.2);
-        if (rightLegRef.current) rightLegRef.current.rotation.x = THREE.MathUtils.lerp(rightLegRef.current.rotation.x, 0, 0.2);
-        if (leftLegRef.current) leftLegRef.current.position.lerp(new THREE.Vector3(-0.18, 0.35, 0), 0.2);
-        if (rightLegRef.current) rightLegRef.current.position.lerp(new THREE.Vector3(0.18, 0.35, 0), 0.2);
+        // Idle: settle to rest pose (soles flat at ground), soft breathing
+        if (leftLegRef.current) {
+            leftLegRef.current.rotation.x = THREE.MathUtils.lerp(leftLegRef.current.rotation.x, 0, 0.2);
+            leftLegRef.current.position.lerp(tmpVec3.set(-0.18, HIP_Y, 0), 0.2);
+        }
+        if (rightLegRef.current) {
+            rightLegRef.current.rotation.x = THREE.MathUtils.lerp(rightLegRef.current.rotation.x, 0, 0.2);
+            rightLegRef.current.position.lerp(tmpVec3.set(0.18, HIP_Y, 0), 0.2);
+        }
+        if (leftKneeRef.current) leftKneeRef.current.rotation.x = THREE.MathUtils.lerp(leftKneeRef.current.rotation.x, 0, 0.2);
+        if (rightKneeRef.current) rightKneeRef.current.rotation.x = THREE.MathUtils.lerp(rightKneeRef.current.rotation.x, 0, 0.2);
         if (leftFootRef.current) leftFootRef.current.rotation.x = THREE.MathUtils.lerp(leftFootRef.current.rotation.x, 0, 0.2);
         if (rightFootRef.current) rightFootRef.current.rotation.x = THREE.MathUtils.lerp(rightFootRef.current.rotation.x, 0, 0.2);
-        if (leftArmRef.current) leftArmRef.current.rotation.x = THREE.MathUtils.lerp(leftArmRef.current.rotation.x, 0, 0.2);
-        
-        // Breathing Idle - subtle
+        if (leftArmRef.current) {
+            leftArmRef.current.rotation.x = THREE.MathUtils.lerp(leftArmRef.current.rotation.x, 0, 0.2);
+            leftArmRef.current.rotation.z = THREE.MathUtils.lerp(leftArmRef.current.rotation.z, 0.08, 0.2);
+        }
+
         if (bodyRef.current) {
-             bodyRef.current.position.y = 0.65 + Math.sin(t * 2) * 0.004;
+             bodyRef.current.position.y = BODY_Y - crouch + Math.sin(t * 2) * 0.006;
              bodyRef.current.rotation.z = THREE.MathUtils.lerp(bodyRef.current.rotation.z, 0, 0.1);
         }
     }
@@ -720,36 +762,38 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
           rightArmRef.current.rotation.y = 0.3;
           swordPivotRef.current.rotation.set(-Math.PI / 2, 0, 0);
       } else if (isAttacking && comboStep > 0) {
-        // Smooth swing timing curve
-        const swing = Math.sin(progress * Math.PI);
+        // Eased swing: windup pulls back past the start, strike whips through fast,
+        // then holds in follow-through. Torso twists with the blade for weight.
+        const e = swingEase(progress);
+        const e01 = THREE.MathUtils.clamp((e + 0.3) / 1.3, 0, 1);
 
         if (comboStep === 1) {
             // Horizontal right-to-left slash
-            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(rightArmRef.current.rotation.x, -0.4, 0.35);
-            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(rightArmRef.current.rotation.y, 0.3, 0.35);
-            swordPivotRef.current.rotation.set(
-                -Math.PI / 2,
-                THREE.MathUtils.lerp(0.9, -1.7, progress),
-                0
-            );
+            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(-0.2, -0.55, e01);
+            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(0.55, 0.05, e01);
+            swordPivotRef.current.rotation.set(-Math.PI / 2, 0.9 + (-1.7 - 0.9) * e, 0);
+            if (bodyRef.current) {
+                bodyRef.current.rotation.y = 0.4 - 0.85 * e01;
+                bodyRef.current.rotation.x = (isMoving ? 0.12 : 0) + 0.08 * Math.sin(e01 * Math.PI);
+            }
         } else if (comboStep === 2) {
             // Return slash left-to-right
-            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(rightArmRef.current.rotation.x, -0.3, 0.35);
-            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(rightArmRef.current.rotation.y, -0.2, 0.35);
-            swordPivotRef.current.rotation.set(
-                -Math.PI / 2,
-                THREE.MathUtils.lerp(-1.7, 0.9, progress),
-                0
-            );
+            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(-0.15, -0.45, e01);
+            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(-0.5, 0.0, e01);
+            swordPivotRef.current.rotation.set(-Math.PI / 2, -1.7 + (0.9 + 1.7) * e, 0);
+            if (bodyRef.current) {
+                bodyRef.current.rotation.y = -0.4 + 0.85 * e01;
+                bodyRef.current.rotation.x = (isMoving ? 0.12 : 0) + 0.08 * Math.sin(e01 * Math.PI);
+            }
         } else if (comboStep === 3) {
-            // Overhead chop
-            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(rightArmRef.current.rotation.x, -1.2, 0.35);
-            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(rightArmRef.current.rotation.y, 0, 0.35);
-            swordPivotRef.current.rotation.set(
-                THREE.MathUtils.lerp(-2.4, 0.1, progress),
-                -0.2,
-                0
-            );
+            // Overhead chop: rear back, then slam down with a forward lean
+            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(-1.6, -0.6, e01);
+            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(0.1, 0, e01);
+            swordPivotRef.current.rotation.set(-2.6 + 2.8 * e, -0.15, 0);
+            if (bodyRef.current) {
+                bodyRef.current.rotation.x = THREE.MathUtils.lerp(-0.14, 0.32, e01);
+                bodyRef.current.rotation.y = THREE.MathUtils.lerp(bodyRef.current.rotation.y, 0, 0.3);
+            }
         }
       } else {
         // Idle / walk: arms relaxed at sides, sword angled down slightly
@@ -773,10 +817,18 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
 
     // --- TAIL ANIMATION ---
     if (tailRef.current) {
-        const tailSpeed = isMoving ? 15 : 2;
-        const tailAmp = isMoving ? 0.15 : 0.05;
-        tailRef.current.rotation.x = -0.2 + Math.sin(t * tailSpeed) * tailAmp;
-        tailRef.current.rotation.y = Math.cos(t * (tailSpeed * 0.5)) * (tailAmp * 2);
+        const tailSpeed = isMoving ? 10 : 2.2;
+        const tailAmp = isMoving ? 0.12 : 0.06;
+        let tailX = -0.15 + Math.sin(t * tailSpeed) * tailAmp;
+        let tailY = Math.cos(t * tailSpeed * 0.5) * tailAmp * 1.6;
+        // Counter-whip opposite the sword swing for weight
+        if (isAttacking && comboStep > 0) {
+            const whip = Math.sin(Math.min(progress, 1) * Math.PI) * 0.55;
+            tailY += comboStep === 2 ? -whip : whip;
+            if (comboStep === 3) tailX -= whip * 0.6;
+        }
+        tailRef.current.rotation.x = tailX;
+        tailRef.current.rotation.y = tailY;
     }
 
     // --- HEAD ANIMATION ---
@@ -788,162 +840,303 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
 
   return (
     <group position={[0, 0, 0]} name="player-model-root">
-      {isAttacking && comboStep > 0 && attackProgress < 1 && <SlashArc comboStep={comboStep} progress={attackProgress} />}
+      {isAttacking && comboStep > 0 && attackProgress < 1 && (
+        <SlashArc
+          comboStep={comboStep}
+          progress={THREE.MathUtils.clamp((attackProgress - SWING_WINDUP_END) / (SWING_STRIKE_END - SWING_WINDUP_END + 0.25), 0, 1)}
+        />
+      )}
       
       <KamehamehaBeam isFiring={isKamehamehaFiring} isCharging={isKamehamehaCharging} charge={kamehamehaCharge} />
 
       <group ref={overallScaleRef}>
-        <group ref={bodyRef} position={[0, 0.65, 0]}>
-            
-            {/* --- TORSO & ARMOR --- */}
-            <mesh castShadow receiveShadow position={[0, 0, 0]}>
-                <capsuleGeometry args={[0.28, 0.4, 4, 16]} />
+        <group ref={bodyRef} position={[0, BODY_Y, 0]}>
+
+            {/* --- TORSO: fur core with cream belly showing below the armor --- */}
+            <mesh castShadow receiveShadow>
+                <capsuleGeometry args={[0.28, 0.34, 4, 16]} />
                 <primitive object={furMaterial} attach="material" />
             </mesh>
-            
-            {/* White Chest Plate */}
-            <mesh castShadow position={[0, 0.1, 0.12]}>
-                <boxGeometry args={[0.45, 0.35, 0.25]} />
+            <mesh position={[0, -0.22, 0.14]} scale={[0.75, 0.8, 0.55]}>
+                <sphereGeometry args={[0.24, 14, 12]} />
+                <primitive object={bellyMaterial} attach="material" />
+            </mesh>
+
+            {/* --- SAIYAN ARMOR --- */}
+            {/* White cuirass: rounded shell over the chest */}
+            <mesh castShadow position={[0, 0.09, 0.01]} scale={[1, 0.8, 0.9]}>
+                <sphereGeometry args={[0.345, 20, 16]} />
                 <primitive object={armorWhiteMat} attach="material" />
             </mesh>
-            
-            {/* Gold/Ribbed Abdomen */}
-            <mesh castShadow position={[0, -0.15, 0.11]}>
-                <cylinderGeometry args={[0.26, 0.27, 0.15, 16]} />
+            {/* Gold shoulder pauldrons curving over the shoulders */}
+            <mesh castShadow position={[-0.32, 0.27, 0]} scale={[1.25, 0.65, 1.05]}>
+                <sphereGeometry args={[0.14, 14, 12]} />
+                <primitive object={armorGoldMat} attach="material" />
+            </mesh>
+            <mesh castShadow position={[0.32, 0.27, 0]} scale={[1.25, 0.65, 1.05]}>
+                <sphereGeometry args={[0.14, 14, 12]} />
+                <primitive object={armorGoldMat} attach="material" />
+            </mesh>
+            {/* Gold abdominal plates */}
+            <mesh castShadow position={[0, -0.14, 0.155]} rotation={[0.12, 0, 0]}>
+                <boxGeometry args={[0.36, 0.09, 0.2]} />
+                <primitive object={armorGoldMat} attach="material" />
+            </mesh>
+            <mesh castShadow position={[0, -0.24, 0.13]} rotation={[0.22, 0, 0]}>
+                <boxGeometry args={[0.3, 0.08, 0.18]} />
+                <primitive object={armorGoldMat} attach="material" />
+            </mesh>
+            {/* Blue waistband + gold crotch plate */}
+            <mesh position={[0, -0.34, 0]}>
+                <cylinderGeometry args={[0.245, 0.26, 0.1, 16]} />
+                <primitive object={suitBlueMat} attach="material" />
+            </mesh>
+            <mesh castShadow position={[0, -0.42, 0.1]} rotation={[0.35, 0, 0]}>
+                <boxGeometry args={[0.18, 0.12, 0.1]} />
                 <primitive object={armorGoldMat} attach="material" />
             </mesh>
 
-            {/* Blue Shoulder Pads */}
-            <group position={[0, 0.3, 0]}>
-                <mesh position={[-0.32, -0.05, 0]} rotation={[0, 0, 0.4]}>
-                    <boxGeometry args={[0.2, 0.1, 0.3]} />
-                    <primitive object={armorBlueMat} attach="material" />
-                </mesh>
-                <mesh position={[0.32, -0.05, 0]} rotation={[0, 0, -0.4]}>
-                    <boxGeometry args={[0.2, 0.1, 0.3]} />
-                    <primitive object={armorBlueMat} attach="material" />
-                </mesh>
-                {/* Back Straps */}
-                <mesh position={[0, 0, -0.15]} rotation={[0.4, 0, 0]}>
-                    <boxGeometry args={[0.5, 0.3, 0.05]} />
-                    <primitive object={armorBlueMat} attach="material" />
-                </mesh>
-            </group>
-
             {/* --- HEAD --- */}
-            <group ref={headRef} position={[0, 0.5, 0]}>
-                {/* Main Head Shape */}
-                <mesh castShadow>
-                    <sphereGeometry args={[0.35, 16, 16]} />
+            <group ref={headRef} position={[0, 0.52, 0]}>
+                <mesh castShadow scale={[1, 0.95, 0.95]}>
+                    <sphereGeometry args={[0.3, 20, 18]} />
                     <primitive object={furMaterial} attach="material" />
+                </mesh>
+                {/* Chubby cheeks */}
+                <mesh position={[-0.14, -0.1, 0.19]} castShadow>
+                    <sphereGeometry args={[0.1, 12, 10]} />
+                    <primitive object={bellyMaterial} attach="material" />
+                </mesh>
+                <mesh position={[0.14, -0.1, 0.19]} castShadow>
+                    <sphereGeometry args={[0.1, 12, 10]} />
+                    <primitive object={bellyMaterial} attach="material" />
                 </mesh>
                 {/* Snout */}
-                <mesh position={[0, -0.05, 0.25]} castShadow>
-                    <sphereGeometry args={[0.18, 16, 16]} />
-                    <primitive object={skinMaterial} attach="material" />
+                <mesh position={[0, -0.06, 0.24]} castShadow>
+                    <sphereGeometry args={[0.125, 14, 12]} />
+                    <primitive object={bellyMaterial} attach="material" />
                 </mesh>
                 {/* Nose */}
-                <mesh position={[0, 0.05, 0.4]}>
-                    <sphereGeometry args={[0.04, 8, 8]} />
+                <mesh position={[0, -0.01, 0.36]}>
+                    <sphereGeometry args={[0.035, 8, 8]} />
                     <primitive object={noseMat} attach="material" />
                 </mesh>
-                {/* Buck Tooth */}
-                <mesh position={[0, -0.1, 0.38]}>
-                    <boxGeometry args={[0.06, 0.06, 0.02]} />
+                {/* Buck teeth: two, slightly apart */}
+                <mesh position={[-0.02, -0.14, 0.33]}>
+                    <boxGeometry args={[0.032, 0.055, 0.015]} />
+                    <primitive object={toothMat} attach="material" />
+                </mesh>
+                <mesh position={[0.02, -0.14, 0.33]}>
+                    <boxGeometry args={[0.032, 0.055, 0.015]} />
+                    <primitive object={toothMat} attach="material" />
+                </mesh>
+                {/* Beady eyes with highlights */}
+                <mesh position={[-0.125, 0.06, 0.235]}>
+                    <sphereGeometry args={[0.07, 12, 10]} />
+                    <primitive object={eyeMat} attach="material" />
+                </mesh>
+                <mesh position={[-0.105, 0.085, 0.29]}>
+                    <sphereGeometry args={[0.02, 6, 6]} />
+                    <primitive object={eyeShineMat} attach="material" />
+                </mesh>
+                <mesh position={[0.125, 0.06, 0.235]}>
+                    <sphereGeometry args={[0.07, 12, 10]} />
+                    <primitive object={eyeMat} attach="material" />
+                </mesh>
+                <mesh position={[0.145, 0.085, 0.29]}>
+                    <sphereGeometry args={[0.02, 6, 6]} />
+                    <primitive object={eyeShineMat} attach="material" />
+                </mesh>
+                {/* Vegeta scowl brows */}
+                <mesh position={[-0.12, 0.16, 0.24]} rotation={[0, 0, -0.42]}>
+                    <boxGeometry args={[0.12, 0.03, 0.03]} />
+                    <primitive object={browMat} attach="material" />
+                </mesh>
+                <mesh position={[0.12, 0.16, 0.24]} rotation={[0, 0, 0.42]}>
+                    <boxGeometry args={[0.12, 0.03, 0.03]} />
+                    <primitive object={browMat} attach="material" />
+                </mesh>
+                {/* Whiskers */}
+                {[-1, 1].map((side) => (
+                    <group key={side}>
+                        <mesh position={[side * 0.2, -0.05, 0.26]} rotation={[0, side * -0.35, 0.12]}>
+                            <boxGeometry args={[0.2, 0.006, 0.006]} />
+                            <primitive object={eyeShineMat} attach="material" />
+                        </mesh>
+                        <mesh position={[side * 0.2, -0.09, 0.26]} rotation={[0, side * -0.35, 0]}>
+                            <boxGeometry args={[0.22, 0.006, 0.006]} />
+                            <primitive object={eyeShineMat} attach="material" />
+                        </mesh>
+                        <mesh position={[side * 0.19, -0.13, 0.25]} rotation={[0, side * -0.35, -0.12]}>
+                            <boxGeometry args={[0.19, 0.006, 0.006]} />
+                            <primitive object={eyeShineMat} attach="material" />
+                        </mesh>
+                    </group>
+                ))}
+                {/* Vegeta flame hair: swept-up spikes */}
+                <mesh position={[0, 0.36, 0]} rotation={[-0.18, 0, 0]} castShadow>
+                    <coneGeometry args={[0.1, 0.32, 8]} />
+                    <primitive object={furDarkMaterial} attach="material" />
+                </mesh>
+                <mesh position={[-0.1, 0.32, -0.03]} rotation={[-0.25, 0, 0.3]} castShadow>
+                    <coneGeometry args={[0.08, 0.25, 8]} />
+                    <primitive object={furDarkMaterial} attach="material" />
+                </mesh>
+                <mesh position={[0.1, 0.32, -0.03]} rotation={[-0.25, 0, -0.3]} castShadow>
+                    <coneGeometry args={[0.08, 0.25, 8]} />
+                    <primitive object={furDarkMaterial} attach="material" />
+                </mesh>
+                <mesh position={[-0.05, 0.31, 0.1]} rotation={[0.12, 0, 0.15]}>
+                    <coneGeometry args={[0.06, 0.18, 8]} />
+                    <primitive object={furDarkMaterial} attach="material" />
+                </mesh>
+                <mesh position={[0.05, 0.31, 0.1]} rotation={[0.12, 0, -0.15]}>
+                    <coneGeometry args={[0.06, 0.18, 8]} />
+                    <primitive object={furDarkMaterial} attach="material" />
+                </mesh>
+                {/* Tufted ears with inner panels */}
+                {[-1, 1].map((side) => (
+                    <group key={`ear${side}`} position={[side * 0.19, 0.24, -0.02]} rotation={[0, 0, side * -0.3]}>
+                        <mesh castShadow>
+                            <capsuleGeometry args={[0.07, 0.14, 4, 8]} />
+                            <primitive object={furMaterial} attach="material" />
+                        </mesh>
+                        <mesh position={[0, 0.01, 0.045]} scale={[0.6, 0.75, 0.4]}>
+                            <sphereGeometry args={[0.07, 8, 8]} />
+                            <primitive object={earInnerMat} attach="material" />
+                        </mesh>
+                        <mesh position={[0, 0.14, 0]}>
+                            <coneGeometry args={[0.032, 0.09, 6]} />
+                            <primitive object={furDarkMaterial} attach="material" />
+                        </mesh>
+                    </group>
+                ))}
+            </group>
+
+            {/* --- BUSHY TAIL: layered S-curve, cream tip --- */}
+            <group ref={tailRef} position={[0, -0.28, -0.26]}>
+                <mesh position={[0, 0, -0.1]} castShadow>
+                    <sphereGeometry args={[0.18, 12, 10]} />
+                    <primitive object={furDarkMaterial} attach="material" />
+                </mesh>
+                <mesh position={[0, 0.32, -0.26]} scale={[1, 1.2, 1]} castShadow>
+                    <sphereGeometry args={[0.28, 16, 14]} />
+                    <primitive object={furMaterial} attach="material" />
+                </mesh>
+                <mesh position={[0, 0.72, -0.2]} scale={[1, 1.15, 1]} castShadow>
+                    <sphereGeometry args={[0.29, 16, 14]} />
+                    <primitive object={furMaterial} attach="material" />
+                </mesh>
+                <mesh position={[0, 1.04, -0.04]} castShadow>
+                    <sphereGeometry args={[0.21, 14, 12]} />
+                    <primitive object={furMaterial} attach="material" />
+                </mesh>
+                <mesh position={[0, 1.2, 0.08]} castShadow>
+                    <sphereGeometry args={[0.13, 12, 10]} />
+                    <primitive object={bellyMaterial} attach="material" />
+                </mesh>
+            </group>
+
+            {/* --- ARMS: blue undersuit, white gloves --- */}
+            <group ref={leftArmRef} position={[-0.35, 0.24, 0.08]}>
+                <mesh position={[0, -0.12, 0]} castShadow>
+                    <capsuleGeometry args={[0.08, 0.18, 4, 10]} />
+                    <primitive object={suitBlueMat} attach="material" />
+                </mesh>
+                <mesh position={[0, -0.3, 0.01]} castShadow>
+                    <capsuleGeometry args={[0.07, 0.14, 4, 10]} />
+                    <primitive object={suitBlueMat} attach="material" />
+                </mesh>
+                <mesh position={[0, -0.38, 0.01]}>
+                    <cylinderGeometry args={[0.085, 0.095, 0.06, 10]} />
                     <primitive object={armorWhiteMat} attach="material" />
                 </mesh>
-                {/* Glowing Red Eyes */}
-                <mesh position={[-0.12, 0.08, 0.25]} rotation={[0, -0.2, 0]}>
-                    <sphereGeometry args={[0.09, 16, 16]} />
-                    <primitive object={eyeMat} attach="material" />
-                </mesh>
-                <mesh position={[0.12, 0.08, 0.25]} rotation={[0, 0.2, 0]}>
-                    <sphereGeometry args={[0.09, 16, 16]} />
-                    <primitive object={eyeMat} attach="material" />
-                </mesh>
-                {/* Red Horns */}
-                <mesh position={[-0.15, 0.28, 0.1]} rotation={[0, 0, 0.4]}>
-                    <coneGeometry args={[0.06, 0.2, 8]} />
-                    <primitive object={hornMat} attach="material" />
-                </mesh>
-                <mesh position={[0.15, 0.28, 0.1]} rotation={[0, 0, -0.4]}>
-                    <coneGeometry args={[0.06, 0.2, 8]} />
-                    <primitive object={hornMat} attach="material" />
-                </mesh>
-                {/* Ears */}
-                <mesh position={[-0.25, 0.2, 0]} rotation={[0, 0, 0.6]}>
-                    <capsuleGeometry args={[0.08, 0.2, 4, 8]} />
-                    <primitive object={furMaterial} attach="material" />
-                </mesh>
-                <mesh position={[0.25, 0.2, 0]} rotation={[0, 0, -0.6]}>
-                    <capsuleGeometry args={[0.08, 0.2, 4, 8]} />
-                    <primitive object={furMaterial} attach="material" />
-                </mesh>
-            </group>
-
-            {/* --- TAIL --- */}
-            <group ref={tailRef} position={[0, -0.2, -0.25]}>
-                <mesh position={[0, 0.4, -0.3]} rotation={[0.5, 0, 0]} castShadow>
-                    {/* Approximating a big bushy tail with a deformed sphere */}
-                    <sphereGeometry args={[0.45, 16, 16]} /> 
-                    <primitive object={furMaterial} attach="material" />
-                </mesh>
-                <mesh position={[0, 0.8, -0.4]} rotation={[0.2, 0, 0]} castShadow>
-                    <sphereGeometry args={[0.4, 16, 16]} />
-                    <primitive object={furMaterial} attach="material" />
-                </mesh>
-            </group>
-
-            {/* --- ARMS --- */}
-            <group ref={leftArmRef} position={[-0.35, 0.24, 0.08]}>
-                {/* Upper arm */}
-                <mesh position={[0, -0.15, 0]} castShadow>
-                    <capsuleGeometry args={[0.09, 0.35, 4, 8]} />
-                    <primitive object={furMaterial} attach="material" />
+                <mesh position={[0, -0.45, 0.01]} castShadow>
+                    <sphereGeometry args={[0.095, 12, 10]} />
+                    <primitive object={armorWhiteMat} attach="material" />
                 </mesh>
             </group>
             <group ref={rightArmRef} position={[0.35, 0.24, 0.08]}>
-                {/* Upper arm */}
-                <mesh position={[0, -0.15, 0]} castShadow>
-                    <capsuleGeometry args={[0.09, 0.35, 4, 8]} />
-                    <primitive object={furMaterial} attach="material" />
+                <mesh position={[0, -0.12, 0]} castShadow>
+                    <capsuleGeometry args={[0.08, 0.18, 4, 10]} />
+                    <primitive object={suitBlueMat} attach="material" />
                 </mesh>
-                {/* Hand at end of arm, sword attached here */}
-                <group ref={swordPivotRef} position={[0, -0.35, 0]}>
-                    <DreadSword 
-                        tipRef={swordTipRef} 
+                <mesh position={[0, -0.3, 0.01]} castShadow>
+                    <capsuleGeometry args={[0.07, 0.14, 4, 10]} />
+                    <primitive object={suitBlueMat} attach="material" />
+                </mesh>
+                <mesh position={[0, -0.38, 0.01]}>
+                    <cylinderGeometry args={[0.085, 0.095, 0.06, 10]} />
+                    <primitive object={armorWhiteMat} attach="material" />
+                </mesh>
+                <mesh position={[0, -0.45, 0.01]} castShadow>
+                    <sphereGeometry args={[0.095, 12, 10]} />
+                    <primitive object={armorWhiteMat} attach="material" />
+                </mesh>
+                {/* Sword attaches at the glove */}
+                <group ref={swordPivotRef} position={[0, -0.46, 0.02]}>
+                    <DreadSword
+                        tipRef={swordTipRef}
                         baseRef={swordBaseRef}
-                        isAttacking={isAttacking} isSpinning={isSpinning} isCharging={isMeleeCharging} charge={meleeCharge} comboStep={comboStep} lastAttackTime={lastAttackTime} 
+                        isAttacking={isAttacking} isSpinning={isSpinning} isCharging={isMeleeCharging} charge={meleeCharge} comboStep={comboStep} lastAttackTime={lastAttackTime}
                     />
                 </group>
             </group>
 
         </group>
 
-        {/* --- LEGS --- */}
-        <group ref={leftLegRef} position={[-0.18, 0.35, 0]}>
-            {/* Thigh */}
-            <mesh position={[0, -0.15, 0]} castShadow>
-                <capsuleGeometry args={[0.11, 0.3, 4, 8]} />
-                <primitive object={furMaterial} attach="material" />
+        {/* --- LEGS: thigh -> knee -> shin -> boot; soles rest at y=0 --- */}
+        <group ref={leftLegRef} position={[-0.18, HIP_Y, 0]}>
+            <mesh position={[0, -0.13, 0]} castShadow>
+                <capsuleGeometry args={[0.1, 0.2, 4, 10]} />
+                <primitive object={suitBlueMat} attach="material" />
             </mesh>
-            {/* Foot */}
-            <mesh ref={leftFootRef} position={[0, -0.35, 0.1]} castShadow>
-                <boxGeometry args={[0.18, 0.12, 0.25]} />
-                <primitive object={furMaterial} attach="material" />
-            </mesh>
+            <group ref={leftKneeRef} position={[0, -0.26, 0]}>
+                <mesh position={[0, -0.09, 0.01]} castShadow>
+                    <capsuleGeometry args={[0.075, 0.14, 4, 10]} />
+                    <primitive object={suitBlueMat} attach="material" />
+                </mesh>
+                <group ref={leftFootRef} position={[0, -0.2, 0]}>
+                    <mesh position={[0, 0, 0.05]} castShadow>
+                        <boxGeometry args={[0.19, 0.12, 0.3]} />
+                        <primitive object={armorWhiteMat} attach="material" />
+                    </mesh>
+                    <mesh position={[0, -0.015, 0.2]} castShadow>
+                        <boxGeometry args={[0.2, 0.09, 0.1]} />
+                        <primitive object={armorGoldMat} attach="material" />
+                    </mesh>
+                    <mesh position={[0, 0.09, -0.02]}>
+                        <cylinderGeometry args={[0.095, 0.11, 0.1, 10]} />
+                        <primitive object={armorWhiteMat} attach="material" />
+                    </mesh>
+                </group>
+            </group>
         </group>
-        <group ref={rightLegRef} position={[0.18, 0.35, 0]}>
-            {/* Thigh */}
-            <mesh position={[0, -0.15, 0]} castShadow>
-                <capsuleGeometry args={[0.11, 0.3, 4, 8]} />
-                <primitive object={furMaterial} attach="material" />
+        <group ref={rightLegRef} position={[0.18, HIP_Y, 0]}>
+            <mesh position={[0, -0.13, 0]} castShadow>
+                <capsuleGeometry args={[0.1, 0.2, 4, 10]} />
+                <primitive object={suitBlueMat} attach="material" />
             </mesh>
-            {/* Foot */}
-            <mesh ref={rightFootRef} position={[0, -0.35, 0.1]} castShadow>
-                <boxGeometry args={[0.18, 0.12, 0.25]} />
-                <primitive object={furMaterial} attach="material" />
-            </mesh>
+            <group ref={rightKneeRef} position={[0, -0.26, 0]}>
+                <mesh position={[0, -0.09, 0.01]} castShadow>
+                    <capsuleGeometry args={[0.075, 0.14, 4, 10]} />
+                    <primitive object={suitBlueMat} attach="material" />
+                </mesh>
+                <group ref={rightFootRef} position={[0, -0.2, 0]}>
+                    <mesh position={[0, 0, 0.05]} castShadow>
+                        <boxGeometry args={[0.19, 0.12, 0.3]} />
+                        <primitive object={armorWhiteMat} attach="material" />
+                    </mesh>
+                    <mesh position={[0, -0.015, 0.2]} castShadow>
+                        <boxGeometry args={[0.2, 0.09, 0.1]} />
+                        <primitive object={armorGoldMat} attach="material" />
+                    </mesh>
+                    <mesh position={[0, 0.09, -0.02]}>
+                        <cylinderGeometry args={[0.095, 0.11, 0.1, 10]} />
+                        <primitive object={armorWhiteMat} attach="material" />
+                    </mesh>
+                </group>
+            </group>
         </group>
 
       </group>
@@ -964,6 +1157,7 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
   const lastTipPos = useRef(new THREE.Vector3());
   const lastBasePos = useRef(new THREE.Vector3());
   const hasPrevPos = useRef(false);
+  const lastJumpKeyDown = useRef(false);
 
   // Kamehameha Refs
   const kamehamehaTimer = useRef(0);
@@ -1006,6 +1200,9 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
     const cv = rigidBody.current.linvel();
     const store = useGameStore.getState();
     const currentPos = rigidBody.current.translation();
+    livePlayerPosition[0] = currentPos.x;
+    livePlayerPosition[1] = currentPos.y;
+    livePlayerPosition[2] = currentPos.z;
     let pendingJump = false;
 
     const ro = { x: currentPos.x, y: currentPos.y + 0.5, z: currentPos.z };
@@ -1096,7 +1293,7 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
 
             currentEnemies.forEach(enemy => {
                 if (!enemy || enemy.isDead || hitList.current.has(enemy.id)) return;
-                const ePos = new THREE.Vector3(...enemy.position);
+                const ePos = new THREE.Vector3(...(liveEnemyPositions[enemy.id] ?? enemy.position));
                 ePos.y += 1.0; 
                 const closestPoint = new THREE.Vector3();
                 line.closestPointToPoint(ePos, true, closestPoint);
@@ -1112,7 +1309,7 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
 
             currentTownNPCs.forEach(npc => {
                 if (!npc || hitList.current.has(npc.id)) return;
-                const nPos = new THREE.Vector3(...npc.position);
+                const nPos = new THREE.Vector3(...(liveTownNPCPositions[npc.id] ?? npc.position));
                 nPos.y += 1.0; 
                 const closestPoint = new THREE.Vector3();
                 line.closestPointToPoint(nPos, true, closestPoint);

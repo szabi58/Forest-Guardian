@@ -6,6 +6,18 @@ import { getTerrainHeight } from './components/Environment';
 
 const generateId = () => Math.random().toString(36).substring(2, 15);
 
+// Live positions are mutated in place every physics frame. They live OUTSIDE zustand
+// state on purpose: writing them through set() re-rendered every store subscriber
+// ~60x/sec per entity. Frame-loop consumers (sword, guards, AI) read these directly;
+// the reactive arrays keep only slow-changing data (hp, death, spawn position).
+export const liveEnemyPositions: Record<string, [number, number, number]> = {};
+export const liveTownNPCPositions: Record<string, [number, number, number]> = {};
+export const liveTownChildPositions: Record<string, [number, number, number]> = {};
+export const livePlayerPosition: [number, number, number] = [25, 0, 12];
+
+export const getEnemyLivePos = (id: string, fallback: [number, number, number]): [number, number, number] =>
+    liveEnemyPositions[id] ?? fallback;
+
 // Reorganized buildings in a neat grid layout
 const INITIAL_BUILDINGS: BuildingData[] = [
     // North Side (Facing South/Road)
@@ -143,36 +155,33 @@ const getRandomSpawnPosition = (radius: number): [number, number, number] => {
     return [x, y + 1, z];
 };
 
+const SLIME_TARGET_POPULATION = 22;
+const RABBIT_TARGET_POPULATION = 22;
+const CORPSE_LINGER_MS = 25000;
+export const BOSS_RESPAWN_DELAY_MS = 60000;
+export const BOSS_NAME = 'Tyrant of the Wilds';
+
+const makeEnemy = (type: EnemyData['type'], radius: number): EnemyData => {
+    const base = {
+        id: `${type.toLowerCase()}-${generateId()}`,
+        type,
+        position: getRandomSpawnPosition(radius),
+    };
+    const stats = type === 'SLIME' ? { hp: 80, maxHp: 80 }
+        : type === 'TREX' ? { hp: 1200, maxHp: 1200, isBoss: true }
+        : { hp: 60, maxHp: 60 };
+    const enemy = { ...base, ...stats };
+    liveEnemyPositions[enemy.id] = enemy.position;
+    return enemy;
+};
+
 const generateInitialEnemies = (): EnemyData[] => {
     const enemies: EnemyData[] = [];
-    for (let i = 0; i < 35; i++) {
-        enemies.push({
-            id: `slime-${i}`,
-            type: 'SLIME',
-            position: getRandomSpawnPosition(160), // Increased radius
-            hp: 80,
-            maxHp: 80
-        });
-    }
-    for (let i = 0; i < 35; i++) {
-        enemies.push({
-            id: `rabbit-${i}`,
-            type: 'RABBIT',
-            position: getRandomSpawnPosition(160), // Increased radius
-            hp: 60,
-            maxHp: 60
-        });
-    }
-    // Spawn T-Rexes closer (radius 90) so they are easier to find
-    for (let i = 0; i < 2; i++) {
-        enemies.push({
-            id: `trex-${generateId()}`,
-            type: 'TREX',
-            position: getRandomSpawnPosition(110),
-            hp: 300,
-            maxHp: 300
-        });
-    }
+    // Spawn closer to town (radius 110) so the world feels populated near the player
+    for (let i = 0; i < SLIME_TARGET_POPULATION; i++) enemies.push(makeEnemy('SLIME', 110));
+    for (let i = 0; i < RABBIT_TARGET_POPULATION; i++) enemies.push(makeEnemy('RABBIT', 110));
+    // One roaming boss T-Rex outside town
+    enemies.push(makeEnemy('TREX', 100));
     return enemies;
 };
 
@@ -209,6 +218,8 @@ interface GameStore extends GameState {
     damageTownNPC: (id: string, amount: number) => void;
     clearCameraDelta: () => void;
     spawnTrex: () => void;
+    spawnEnemy: (type: 'SLIME' | 'RABBIT') => void;
+    cleanupDeadEnemies: () => void;
     setCameraJoystickVector: (vec: Vector2) => void;
     setCameraJoystickActive: (active: boolean) => void;
 }
@@ -268,9 +279,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   registerCutGrass: (fn) => set({ cutGrassAt: fn }),
   setCurrentSpeed: (currentSpeed) => set({ currentSpeed }),
 
-  updateEnemyPosition: (id, pos) => set((state) => ({
-      enemies: state.enemies.map(e => e.id === id ? { ...e, position: pos } : e)
-  })),
+  // Mutates the live map only — no set(), so no re-renders. Frame-loop readers
+  // (sword, gate guards, boss UI) use liveEnemyPositions directly.
+  updateEnemyPosition: (id, pos) => { liveEnemyPositions[id] = pos; },
   enemyPushImpulses: {} as Record<string, { vx: number; vz: number }>,
   setEnemyPushImpulse: (id, vx, vz) => set((state) => ({
       enemyPushImpulses: { ...state.enemyPushImpulses, [id]: { vx, vz } }
@@ -287,27 +298,31 @@ export const useGameStore = create<GameStore>((set, get) => ({
       return imp;
   },
 
-  updateTownNPCPosition: (id, pos) => set((state) => ({
-      townNPCs: state.townNPCs.map(n => n.id === id ? { ...n, position: pos } : n)
-  })),
+  updateTownNPCPosition: (id, pos) => { liveTownNPCPositions[id] = pos; },
 
-  updateTownChildPosition: (id, pos) => set((state) => ({
-      townChildren: state.townChildren.map(c => c.id === id ? { ...c, position: pos } : c)
-  })),
+  updateTownChildPosition: (id, pos) => { liveTownChildPositions[id] = pos; },
 
   setTownNPCDialogue: (id, text) => set((state) => ({
       townNPCs: state.townNPCs.map(n => n.id === id ? { ...n, aiResponse: text } : n)
   })),
 
   spawnTrex: () => set((state) => ({
-    enemies: [...state.enemies, {
-        id: `trex-${generateId()}`,
-        type: 'TREX',
-        position: getRandomSpawnPosition(90), // Spawn closer
-        hp: 300,
-        maxHp: 300
-    }]
+    enemies: [...state.enemies, makeEnemy('TREX', 100)]
   })),
+
+  spawnEnemy: (type) => set((state) => ({
+    enemies: [...state.enemies, makeEnemy(type, 130)]
+  })),
+
+  cleanupDeadEnemies: () => set((state) => {
+    const now = Date.now();
+    const keep = state.enemies.filter(e => !e.isDead || !e.deathTime || now - e.deathTime < CORPSE_LINGER_MS);
+    if (keep.length === state.enemies.length) return {};
+    state.enemies.forEach(e => {
+        if (!keep.includes(e)) delete liveEnemyPositions[e.id];
+    });
+    return { enemies: keep };
+  }),
 
   damagePlayer: (amount) => set((state) => {
     if (state.isDodging) return {};
@@ -339,13 +354,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
       if (e.id === id && !e.isDead) {
         const newHp = Math.max(0, e.hp - amount);
         if (newHp <= 0) {
-            scoreGain = e.type === 'TREX' ? 500 : 100;
-            return { 
-                ...e, 
-                hp: 0, 
-                isDead: true, 
+            scoreGain = e.isBoss ? 2000 : e.type === 'TREX' ? 500 : 100;
+            return {
+                ...e,
+                hp: 0,
+                isDead: true,
+                // Snapshot the live position so death effects render where it died,
+                // not where it spawned
+                position: liveEnemyPositions[e.id] ?? e.position,
+                deathTime: Date.now(),
                 killedBySword: damageSource === 'SWORD',
-                killedByKamehameha: damageSource === 'KAMEHAMEHA' 
+                killedByKamehameha: damageSource === 'KAMEHAMEHA'
             };
         }
         return { ...e, hp: newHp };
@@ -376,14 +395,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
     })
   })),
 
-  resetGame: () => set({
+  resetGame: () => {
+    Object.keys(liveEnemyPositions).forEach(k => delete liveEnemyPositions[k]);
+    set({
     health: 100, score: 0, isGameOver: false, isPaused: false, mana: 100,
     enemies: [...generateInitialEnemies()],
     environmentObjects: [...createForest()],
     projectiles: [],
     isInsideBuildingId: null,
     enemyPushImpulses: {}
-  }),
+    });
+  },
 
   togglePause: () => set((state) => ({ isPaused: !state.isPaused })),
 
