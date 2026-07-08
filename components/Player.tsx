@@ -162,96 +162,311 @@ const SwordBladeParticles: React.FC<{ active: boolean; bladeLength: number }> = 
 };
 
 // --- KAMEHAMEHA VISUALS ---
-const KamehamehaBeam: React.FC<{ isFiring: boolean; isCharging: boolean; charge: number }> = ({ isFiring, isCharging, charge }) => {
-    const beamRef = useRef<THREE.Group>(null);
-    const chargeSphereRef = useRef<THREE.Mesh>(null);
-    const outerBeamRef = useRef<THREE.Mesh>(null);
-    const spiralRef = useRef<THREE.Mesh>(null);
+// Authentic DBZ-style energy beam. All particles are fixed-size pools; nothing
+// is allocated per frame and nothing persists after the beam ends (the ground
+// scorch uses the existing grass mask, which fades on its own).
+const BEAM_MAX_LEN = 40;
+const KAME_SUCK_COUNT = 24;
+const KAME_SPARK_COUNT = 24;
+const KAME_DUST_COUNT = 14;
 
-    useFrame((state) => {
+const KamehamehaVFX: React.FC<{ isFiring: boolean; isCharging: boolean; charge: number }> = ({ isFiring, isCharging, charge }) => {
+    const { world, rapier } = useRapier();
+    const rootRef = useRef<THREE.Group>(null);
+    const orbCoreRef = useRef<THREE.Mesh>(null);
+    const orbGlowRef = useRef<THREE.Mesh>(null);
+    const orbLightRef = useRef<THREE.PointLight>(null);
+    const beamGroupRef = useRef<THREE.Group>(null);
+    const beamScaleRef = useRef<THREE.Group>(null);
+    const coreRef = useRef<THREE.Mesh>(null);
+    const innerRef = useRef<THREE.Mesh>(null);
+    const outerRef = useRef<THREE.Mesh>(null);
+    const helix1Ref = useRef<THREE.Mesh>(null);
+    const helix2Ref = useRef<THREE.Mesh>(null);
+    const ring1Ref = useRef<THREE.Mesh>(null);
+    const ring2Ref = useRef<THREE.Mesh>(null);
+    const impactRef = useRef<THREE.Group>(null);
+    const impactFlashRef = useRef<THREE.Mesh>(null);
+    const impactRingRef = useRef<THREE.Mesh>(null);
+    const impactLightRef = useRef<THREE.PointLight>(null);
+    const suckRef = useRef<THREE.InstancedMesh>(null);
+    const sparksRef = useRef<THREE.InstancedMesh>(null);
+    const dustRef = useRef<THREE.InstancedMesh>(null);
+
+    const fade = useRef(0);                 // eases the beam in on fire and out on release
+    const beamLen = useRef(BEAM_MAX_LEN);
+    const scorchTimer = useRef(0);
+    const dummy = useMemo(() => new THREE.Object3D(), []);
+    const wPos = useMemo(() => new THREE.Vector3(), []);
+    const wDir = useMemo(() => new THREE.Vector3(), []);
+    const ray = useMemo(() => new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 }), [rapier]);
+
+    const suckParts = useMemo(() => Array.from({ length: KAME_SUCK_COUNT }).map(() => ({
+        dir: new THREE.Vector3().randomDirection(),
+        dist: 0.6 + Math.random() * 2.0,
+        speed: 1.6 + Math.random() * 2.2,
+    })), []);
+    const sparkParts = useMemo(() => Array.from({ length: KAME_SPARK_COUNT }).map(() => ({
+        dir: new THREE.Vector3(),
+        life: Math.random(),
+        speed: 1.6 + Math.random() * 1.6,
+    })), []);
+    const dustParts = useMemo(() => Array.from({ length: KAME_DUST_COUNT }).map(() => ({
+        ang: Math.random() * Math.PI * 2,
+        r: 0.8 + Math.random() * 2.4,
+        speed: 1.2 + Math.random() * 1.4,
+    })), []);
+
+    // Flowing helical energy ribbon wrapped around the beam core (unit height, stretched by beamScale)
+    const helixGeo = useMemo(() => {
+        class HelixCurve extends THREE.Curve<THREE.Vector3> {
+            constructor() { super(); }
+            getPoint(t: number) {
+                const ang = t * Math.PI * 2 * 11;
+                return new THREE.Vector3(Math.cos(ang) * 0.72, t, Math.sin(ang) * 0.72);
+            }
+        }
+        return new THREE.TubeGeometry(new HelixCurve(), 200, 0.07, 5, false);
+    }, []);
+
+    const setOpacity = (mesh: THREE.Mesh | null, o: number) => {
+        if (mesh?.material) (mesh.material as THREE.MeshBasicMaterial).opacity = o;
+    };
+
+    useFrame((state, delta) => {
+        if (!rootRef.current || delta <= 0 || delta > 0.1) return;
         const t = state.clock.elapsedTime;
 
-        // Charging Sphere Logic
-        if (chargeSphereRef.current) {
+        // Beam presence eases in fast, dissipates smoothly on release
+        fade.current = THREE.MathUtils.lerp(fade.current, isFiring ? 1 : 0, 1 - Math.exp(-(isFiring ? 20 : 7) * delta));
+        if (!isFiring && fade.current < 0.01) fade.current = 0;
+        const f = fade.current;
+
+        // --- CHARGE ORB ---
+        const orbActive = isCharging || f > 0.01;
+        if (orbCoreRef.current && orbGlowRef.current && orbLightRef.current) {
+            orbCoreRef.current.visible = orbActive;
+            orbGlowRef.current.visible = orbActive;
             if (isCharging) {
-                const s = 0.5 + charge * 1.5 + Math.sin(t * 20) * 0.1;
-                chargeSphereRef.current.scale.set(s, s, s);
-                chargeSphereRef.current.visible = true;
-                chargeSphereRef.current.rotation.z += 0.2;
-                chargeSphereRef.current.rotation.y += 0.1;
-            } else if (isFiring) {
-                chargeSphereRef.current.scale.setScalar(2.0 + Math.sin(t * 30) * 0.2);
-                chargeSphereRef.current.visible = true;
+                const pulse = 1 + Math.sin(t * 18) * 0.09 + Math.sin(t * 47) * 0.04;
+                const cs = (0.12 + charge * 0.5) * pulse;
+                orbCoreRef.current.scale.setScalar(Math.max(cs, 0.001));
+                orbGlowRef.current.scale.setScalar(Math.max(cs * 2.4 + charge * 0.35, 0.001));
+                orbLightRef.current.intensity = 4 + charge * 26 + Math.sin(t * 18) * 2 * charge;
+            } else if (f > 0.01) {
+                // Muzzle flare while the beam is out
+                orbCoreRef.current.scale.setScalar((0.55 + Math.sin(t * 35) * 0.08) * f);
+                orbGlowRef.current.scale.setScalar((1.5 + Math.sin(t * 22) * 0.2) * f);
+                orbLightRef.current.intensity = 42 * f;
             } else {
-                chargeSphereRef.current.visible = false;
-                chargeSphereRef.current.scale.set(0,0,0);
+                orbLightRef.current.intensity = 0;
             }
         }
 
-        // Beam Logic
-        if (beamRef.current) {
-            beamRef.current.visible = isFiring;
-            if (isFiring) {
-                const flicker = 1 + Math.sin(t * 40) * 0.1;
-                beamRef.current.scale.set(flicker, flicker, 1);
-                
-                if (outerBeamRef.current) {
-                    const outerFlicker = 1 + Math.cos(t * 30) * 0.15;
-                    outerBeamRef.current.scale.set(outerFlicker, outerFlicker, 1);
+        // Suck-in particles: drawn from a shell toward the orb while charging
+        if (suckRef.current) {
+            suckRef.current.visible = isCharging;
+            if (isCharging) {
+                for (let i = 0; i < KAME_SUCK_COUNT; i++) {
+                    const p = suckParts[i];
+                    p.dist -= delta * p.speed * (0.7 + charge);
+                    if (p.dist < 0.12) {
+                        p.dist = 1.1 + Math.random() * 1.5;
+                        p.dir.randomDirection();
+                    }
+                    const s = 0.02 + 0.045 * (1 - p.dist / 2.6) * (0.4 + charge);
+                    dummy.position.copy(p.dir).multiplyScalar(p.dist);
+                    dummy.scale.setScalar(s);
+                    dummy.rotation.set(0, 0, 0);
+                    dummy.updateMatrix();
+                    suckRef.current.setMatrixAt(i, dummy.matrix);
                 }
-                
-                if (spiralRef.current) {
-                    spiralRef.current.rotation.x -= 0.5;
-                    spiralRef.current.scale.set(1.5 + Math.sin(t * 10) * 0.2, 1.5 + Math.sin(t * 10) * 0.2, 1);
+                suckRef.current.instanceMatrix.needsUpdate = true;
+            }
+        }
+
+        // --- BEAM ---
+        if (beamGroupRef.current && beamScaleRef.current) {
+            beamGroupRef.current.visible = f > 0.01;
+            if (f > 0.01) {
+                // Visual raycast: beam stops at walls/terrain (passes through enemies, like the damage ray)
+                rootRef.current.getWorldPosition(wPos);
+                rootRef.current.getWorldDirection(wDir);
+                if (isFiring) {
+                    ray.origin.x = wPos.x; ray.origin.y = wPos.y; ray.origin.z = wPos.z;
+                    ray.dir.x = wDir.x; ray.dir.y = wDir.y; ray.dir.z = wDir.z;
+                    const hit = world.castRay(ray, BEAM_MAX_LEN, true, undefined, undefined, undefined, undefined,
+                        (collider: any) => {
+                            if (collider.isSensor()) return false;
+                            const ud = collider.parent()?.userData as any;
+                            return ud?.type === 'ENVIRONMENT' || !ud?.type;
+                        });
+                    const toi = hit ? (hit as any).toi ?? (hit as any).timeOfImpact : null;
+                    const targetLen = Number.isFinite(toi) ? THREE.MathUtils.clamp(toi as number, 2, BEAM_MAX_LEN) : BEAM_MAX_LEN;
+                    beamLen.current = THREE.MathUtils.lerp(beamLen.current, targetLen, 0.5);
                 }
+
+                const flicker = 1 + Math.sin(t * 40) * 0.05 + Math.sin(t * 13) * 0.04;
+                beamScaleRef.current.scale.set(f * flicker, beamLen.current, f * flicker);
+
+                // Flowing spiral: counter-rotating ribbons
+                if (helix1Ref.current) helix1Ref.current.rotation.y = t * 9;
+                if (helix2Ref.current) helix2Ref.current.rotation.y = -t * 6.5 + Math.PI;
+                setOpacity(coreRef.current, f);
+                setOpacity(innerRef.current, 0.65 * f);
+                setOpacity(outerRef.current, 0.32 * f);
+                setOpacity(helix1Ref.current, 0.5 * f);
+                setOpacity(helix2Ref.current, 0.35 * f);
+
+                // Muzzle burst rings expanding outward from the hands
+                const r1 = (t * 2.6) % 1;
+                const r2 = (t * 2.6 + 0.5) % 1;
+                if (ring1Ref.current) { ring1Ref.current.visible = true; ring1Ref.current.scale.setScalar(0.4 + r1 * 2.2); setOpacity(ring1Ref.current, (1 - r1) * 0.75 * f); }
+                if (ring2Ref.current) { ring2Ref.current.visible = true; ring2Ref.current.scale.setScalar(0.4 + r2 * 2.2); setOpacity(ring2Ref.current, (1 - r2) * 0.75 * f); }
+
+                // --- IMPACT ---
+                const hitting = beamLen.current < BEAM_MAX_LEN - 0.5;
+                if (impactRef.current) {
+                    impactRef.current.visible = hitting;
+                    impactRef.current.position.z = beamLen.current;
+                }
+                if (hitting) {
+                    if (impactFlashRef.current) impactFlashRef.current.scale.setScalar((1.1 + Math.sin(t * 30) * 0.28) * f);
+                    const rp = (t * 2.1) % 1;
+                    if (impactRingRef.current) { impactRingRef.current.scale.setScalar(0.5 + rp * 4.5); setOpacity(impactRingRef.current, (1 - rp) * 0.8 * f); }
+                    if (impactLightRef.current) impactLightRef.current.intensity = (26 + Math.sin(t * 25) * 8) * f;
+                    if (sparksRef.current) {
+                        sparksRef.current.visible = true;
+                        for (let i = 0; i < KAME_SPARK_COUNT; i++) {
+                            const p = sparkParts[i];
+                            p.life -= delta * p.speed;
+                            if (p.life <= 0) {
+                                p.life = 1;
+                                p.dir.set((Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2, -Math.random() * 1.2).normalize();
+                            }
+                            dummy.position.copy(p.dir).multiplyScalar((1 - p.life) * 3.4);
+                            dummy.scale.setScalar(0.06 * p.life * f);
+                            dummy.updateMatrix();
+                            sparksRef.current.setMatrixAt(i, dummy.matrix);
+                        }
+                        sparksRef.current.instanceMatrix.needsUpdate = true;
+                    }
+                    // Scorch the grass at the impact point (grass mask fades on its own)
+                    scorchTimer.current += delta;
+                    if (isFiring && scorchTimer.current > 0.12) {
+                        scorchTimer.current = 0;
+                        const cut = useGameStore.getState().cutGrassAt;
+                        if (cut) {
+                            cut(wPos.x + wDir.x * beamLen.current, wPos.z + wDir.z * beamLen.current, 2.4, 0.55);
+                            // Blowback: flatten the grass around the character too
+                            cut(wPos.x, wPos.z, 3.2, 0.16);
+                        }
+                    }
+                } else if (sparksRef.current) {
+                    sparksRef.current.visible = false;
+                }
+
+                // Dust kicked outward around the character by the beam's force
+                if (dustRef.current) {
+                    dustRef.current.visible = true;
+                    for (let i = 0; i < KAME_DUST_COUNT; i++) {
+                        const p = dustParts[i];
+                        p.r += delta * p.speed * 1.6;
+                        if (p.r > 4.2) { p.r = 0.7; p.ang = Math.random() * Math.PI * 2; }
+                        const fadeOut = 1 - p.r / 4.2;
+                        dummy.position.set(Math.cos(p.ang) * p.r, -0.72 + Math.sin(t * 6 + p.ang * 3) * 0.06, Math.sin(p.ang) * p.r);
+                        dummy.scale.setScalar((0.14 + (1 - fadeOut) * 0.2) * fadeOut * f);
+                        dummy.updateMatrix();
+                        dustRef.current.setMatrixAt(i, dummy.matrix);
+                    }
+                    dustRef.current.instanceMatrix.needsUpdate = true;
+                }
+            } else {
+                if (impactRef.current) impactRef.current.visible = false;
+                if (impactLightRef.current) impactLightRef.current.intensity = 0;
+                if (sparksRef.current) sparksRef.current.visible = false;
+                if (dustRef.current) dustRef.current.visible = false;
+                // Muzzle rings live outside the beam group — hide them explicitly
+                // or their last faint frame lingers after the attack ends
+                if (ring1Ref.current) ring1Ref.current.visible = false;
+                if (ring2Ref.current) ring2Ref.current.visible = false;
             }
         }
     });
 
     return (
-        <group position={[0, 0.8, 0.8]}>
-            {/* Charge Sphere */}
-            <mesh ref={chargeSphereRef}>
-                <sphereGeometry args={[0.3, 16, 16]} />
-                <meshStandardMaterial 
-                    color="#00ffff" 
-                    emissive="#00bfff" 
-                    emissiveIntensity={15} 
-                    transparent 
-                    opacity={0.8}
-                    wireframe={isCharging} // Wireframe look while charging
-                />
-                <pointLight distance={10} intensity={isCharging ? 5 + charge * 10 : (isFiring ? 20 : 0)} color="#00ffff" />
+        <group ref={rootRef} position={[0, 0.85, 0.55]}>
+            {/* CHARGE ORB: white-hot core inside a soft additive blue glow */}
+            <mesh ref={orbCoreRef} visible={false}>
+                <sphereGeometry args={[1, 16, 12]} />
+                <meshBasicMaterial color="#f2ffff" toneMapped={false} />
+            </mesh>
+            <mesh ref={orbGlowRef} visible={false}>
+                <sphereGeometry args={[1, 16, 12]} />
+                <meshBasicMaterial color="#2f8fff" transparent opacity={0.4} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+            </mesh>
+            <pointLight ref={orbLightRef} color="#66ccff" distance={15} intensity={0} />
+            <instancedMesh ref={suckRef} args={[undefined, undefined, KAME_SUCK_COUNT]} visible={false} frustumCulled={false}>
+                <sphereGeometry args={[1, 5, 4]} />
+                <meshBasicMaterial color="#aaddff" transparent opacity={0.9} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+            </instancedMesh>
+
+            {/* MUZZLE BURST RINGS (face down-range) */}
+            <mesh ref={ring1Ref} position={[0, 0, 0.25]} visible={false}>
+                <torusGeometry args={[1, 0.06, 8, 32]} />
+                <meshBasicMaterial color="#bfe8ff" transparent opacity={0} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+            </mesh>
+            <mesh ref={ring2Ref} position={[0, 0, 0.25]} visible={false}>
+                <torusGeometry args={[1, 0.06, 8, 32]} />
+                <meshBasicMaterial color="#bfe8ff" transparent opacity={0} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
             </mesh>
 
-            {/* The Beam */}
-            <group ref={beamRef} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, 20]}> {/* Extended forward */}
-                {/* Core */}
-                <mesh>
-                    <cylinderGeometry args={[0.4, 0.4, 40, 16, 1, true]} />
-                    <meshBasicMaterial color="#ffffff" />
-                </mesh>
-                {/* Glow */}
-                <mesh ref={outerBeamRef}>
-                    <cylinderGeometry args={[1.2, 1.8, 40, 16, 1, true]} />
-                    <meshStandardMaterial 
-                        color="#00ffff" 
-                        emissive="#0000ff" 
-                        emissiveIntensity={5} 
-                        transparent 
-                        opacity={0.4} 
-                        side={THREE.DoubleSide} 
-                        depthWrite={false}
-                    />
-                </mesh>
-                {/* Spiral Energy */}
-                <mesh ref={spiralRef}>
-                     <torusGeometry args={[1.0, 0.1, 16, 100]} />
-                     <meshBasicMaterial color="#ffffff" transparent opacity={0.6} />
-                </mesh>
-                
-                <pointLight position={[0, 10, 0]} intensity={10} distance={20} color="#00ffff" />
+            {/* BEAM: unit-height layers along +Y, rotated to point forward, stretched to the raycast length */}
+            <group ref={beamGroupRef} visible={false} rotation={[Math.PI / 2, 0, 0]}>
+                <group ref={beamScaleRef}>
+                    <mesh ref={coreRef} position={[0, 0.5, 0]}>
+                        <cylinderGeometry args={[0.3, 0.38, 1, 12, 1, true]} />
+                        <meshBasicMaterial color="#ffffff" transparent opacity={1} depthWrite={false} toneMapped={false} />
+                    </mesh>
+                    <mesh ref={innerRef} position={[0, 0.5, 0]}>
+                        <cylinderGeometry args={[0.55, 0.7, 1, 12, 1, true]} />
+                        <meshBasicMaterial color="#7fd4ff" transparent opacity={0.65} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} toneMapped={false} />
+                    </mesh>
+                    <mesh ref={outerRef} position={[0, 0.5, 0]}>
+                        <cylinderGeometry args={[1.0, 1.45, 1, 12, 1, true]} />
+                        <meshBasicMaterial color="#1f6dff" transparent opacity={0.32} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} toneMapped={false} />
+                    </mesh>
+                    <mesh ref={helix1Ref} geometry={helixGeo}>
+                        <meshBasicMaterial color="#e6f7ff" transparent opacity={0.5} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+                    </mesh>
+                    <mesh ref={helix2Ref} geometry={helixGeo} scale={[1.18, 1, 1.18]}>
+                        <meshBasicMaterial color="#66baff" transparent opacity={0.35} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+                    </mesh>
+                </group>
             </group>
+
+            {/* IMPACT: flash, shockwave ring, sparks, light */}
+            <group ref={impactRef} visible={false}>
+                <mesh ref={impactFlashRef}>
+                    <sphereGeometry args={[0.9, 12, 10]} />
+                    <meshBasicMaterial color="#ffffff" transparent opacity={0.9} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+                </mesh>
+                <mesh ref={impactRingRef}>
+                    <torusGeometry args={[1, 0.08, 8, 36]} />
+                    <meshBasicMaterial color="#9fdcff" transparent opacity={0} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+                </mesh>
+                <instancedMesh ref={sparksRef} args={[undefined, undefined, KAME_SPARK_COUNT]} visible={false} frustumCulled={false}>
+                    <sphereGeometry args={[1, 5, 4]} />
+                    <meshBasicMaterial color="#cfeaff" transparent opacity={0.95} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+                </instancedMesh>
+                <pointLight ref={impactLightRef} color="#7fc9ff" distance={18} intensity={0} />
+            </group>
+
+            {/* Dust blown outward at ground level around the character */}
+            <instancedMesh ref={dustRef} args={[undefined, undefined, KAME_DUST_COUNT]} visible={false} frustumCulled={false}>
+                <sphereGeometry args={[1, 6, 5]} />
+                <meshStandardMaterial color="#9c8a6d" transparent opacity={0.35} roughness={1} depthWrite={false} />
+            </instancedMesh>
         </group>
     );
 };
@@ -485,6 +700,161 @@ const swingEase = (p: number): number => {
     return -0.3 + 1.3 * (1 - Math.pow(1 - k, 4));
   }
   return 1;
+};
+
+// --- FIRST-PERSON ARMS ---
+// Shown instead of the squirrel model when the camera zooms in past the FP
+// threshold. Glued to the camera every frame; swings reuse the same combo
+// timing and easing as the third-person model, and the sword is the same
+// DreadSword component so the weapon looks identical up close.
+const FirstPersonArms: React.FC = () => {
+  const groupRef = useRef<THREE.Group>(null);
+  const rigRef = useRef<THREE.Group>(null);
+  const rightPivotRef = useRef<THREE.Group>(null);
+  const leftPivotRef = useRef<THREE.Group>(null);
+  const fpTipRef = useRef<THREE.Group>(null);
+  const fpBaseRef = useRef<THREE.Group>(null);
+  const spinStart = useRef(0);
+  const wasSpinning = useRef(false);
+
+  const isAttacking = useGameStore(s => s.isAttacking);
+  const isSpinning = useGameStore(s => s.isSpinning);
+  const isMeleeCharging = useGameStore(s => s.isMeleeCharging);
+  const meleeCharge = useGameStore(s => s.meleeCharge);
+  const comboStep = useGameStore(s => s.comboStep);
+  const lastAttackTime = useGameStore(s => s.lastAttackTime);
+
+  const suitBlueMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#1e3f9e', roughness: 0.6 }), []);
+  const gloveMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#f2f4f7', roughness: 0.25, metalness: 0.15 }), []);
+  const furMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#96602e', roughness: 0.95 }), []);
+
+  useFrame((state) => {
+    const g = groupRef.current;
+    if (!g) return;
+    // Glue the rig to the camera every frame
+    g.position.copy(state.camera.position);
+    g.quaternion.copy(state.camera.quaternion);
+
+    const store = useGameStore.getState();
+    const t = state.clock.elapsedTime;
+
+    // Walk bob + gentle breathing sway
+    const speedN = THREE.MathUtils.clamp((store.currentSpeed || 0) / 12, 0, 1);
+    if (rigRef.current) {
+      rigRef.current.position.y = -0.02 + Math.sin(t * 9) * 0.018 * speedN + Math.sin(t * 1.7) * 0.006;
+      rigRef.current.position.x = Math.cos(t * 4.5) * 0.012 * speedN;
+      rigRef.current.rotation.z = Math.cos(t * 4.5) * 0.01 * speedN;
+    }
+
+    const right = rightPivotRef.current;
+    const left = leftPivotRef.current;
+    if (!right || !left) return;
+
+    // Spin attack: whirl the blade a full turn across the view
+    if (store.isSpinning) {
+      if (!wasSpinning.current) { spinStart.current = Date.now(); wasSpinning.current = true; }
+      const sp = THREE.MathUtils.clamp((Date.now() - spinStart.current) / SPIN_DURATION, 0, 1);
+      right.rotation.set(0.2, -Math.PI + sp * Math.PI * 2, 0);
+      left.rotation.set(-0.5, 0.3, 0);
+      return;
+    }
+    wasSpinning.current = false;
+
+    if (store.isAttacking) {
+      const progress = THREE.MathUtils.clamp((Date.now() - store.lastAttackTime) / 400, 0, 1);
+      const e = swingEase(progress);
+      const e01 = THREE.MathUtils.clamp((e + 0.3) / 1.3, 0, 1);
+      if (store.comboStep === 1) {
+        // Horizontal slash, right to left
+        right.rotation.set(
+          THREE.MathUtils.lerp(0.35, 0.05, e01),
+          THREE.MathUtils.lerp(-1.15, 1.05, e01),
+          THREE.MathUtils.lerp(-0.4, 0.5, e01)
+        );
+        left.rotation.set(-0.45 - 0.25 * e01, 0.25, 0.15);
+      } else if (store.comboStep === 2) {
+        // Backhand, left to right
+        right.rotation.set(
+          THREE.MathUtils.lerp(0.3, 0.05, e01),
+          THREE.MathUtils.lerp(0.95, -1.25, e01),
+          THREE.MathUtils.lerp(0.45, -0.5, e01)
+        );
+        left.rotation.set(-0.45 - 0.25 * e01, 0.25, 0.15);
+      } else {
+        // Overhead chop: raise high behind, slam down through center
+        right.rotation.set(
+          THREE.MathUtils.lerp(1.7, -0.75, e01),
+          THREE.MathUtils.lerp(-0.15, 0.05, e01),
+          0
+        );
+        left.rotation.set(THREE.MathUtils.lerp(-0.45, -0.9, e01), 0.35, 0.2);
+      }
+      return;
+    }
+
+    // Idle / charge pose — Minecraft-style: blade angled upward across the
+    // lower-right of the view, not pointing down-range. Charging pulls it back.
+    const charge = store.isMeleeCharging ? store.meleeCharge : 0;
+    const tremble = charge > 0 ? Math.sin(t * 45) * 0.02 * charge : 0;
+    const idleSway = Math.sin(t * 1.6) * 0.03;
+    right.rotation.x = THREE.MathUtils.lerp(right.rotation.x, 1.15 + idleSway + charge * 0.45 + tremble, 0.15);
+    right.rotation.y = THREE.MathUtils.lerp(right.rotation.y, -0.5 - charge * 0.4, 0.15);
+    right.rotation.z = THREE.MathUtils.lerp(right.rotation.z, -0.3 + tremble, 0.15);
+    left.rotation.x = THREE.MathUtils.lerp(left.rotation.x, -0.45 + idleSway * 0.7, 0.12);
+    left.rotation.y = THREE.MathUtils.lerp(left.rotation.y, 0.25, 0.12);
+    left.rotation.z = THREE.MathUtils.lerp(left.rotation.z, 0.15, 0.12);
+  });
+
+  return (
+    <group ref={groupRef}>
+      <group ref={rigRef}>
+        {/* Right arm holding the sword */}
+        <group ref={rightPivotRef} position={[0.38, -0.32, -0.25]}>
+          <mesh position={[0, 0, -0.28]} rotation={[Math.PI / 2, 0, 0]}>
+            <cylinderGeometry args={[0.055, 0.07, 0.5, 10]} />
+            <primitive object={suitBlueMat} attach="material" />
+          </mesh>
+          <mesh position={[0, 0, -0.06]}>
+            <sphereGeometry args={[0.075, 10, 8]} />
+            <primitive object={furMat} attach="material" />
+          </mesh>
+          <mesh position={[0, 0, -0.55]}>
+            <sphereGeometry args={[0.095, 12, 10]} />
+            <primitive object={gloveMat} attach="material" />
+          </mesh>
+          {/* Same DreadSword as third person; wrapper flips it to point down-range */}
+          <group position={[0, -0.02, -0.56]} rotation={[0, Math.PI, 0]} scale={0.7}>
+            <DreadSword
+              isAttacking={isAttacking}
+              isSpinning={isSpinning}
+              isCharging={isMeleeCharging}
+              charge={meleeCharge}
+              comboStep={comboStep}
+              lastAttackTime={lastAttackTime}
+              tipRef={fpTipRef}
+              baseRef={fpBaseRef}
+            />
+          </group>
+        </group>
+
+        {/* Left arm — free hand for balance */}
+        <group ref={leftPivotRef} position={[-0.38, -0.34, -0.25]}>
+          <mesh position={[0, 0, -0.24]} rotation={[Math.PI / 2, 0, 0]}>
+            <cylinderGeometry args={[0.05, 0.065, 0.42, 10]} />
+            <primitive object={suitBlueMat} attach="material" />
+          </mesh>
+          <mesh position={[0, 0, -0.05]}>
+            <sphereGeometry args={[0.07, 10, 8]} />
+            <primitive object={furMat} attach="material" />
+          </mesh>
+          <mesh position={[0, 0, -0.47]}>
+            <sphereGeometry args={[0.085, 12, 10]} />
+            <primitive object={gloveMat} attach="material" />
+          </mesh>
+        </group>
+      </group>
+    </group>
+  );
 };
 
 interface SquirrelModelProps {
@@ -847,8 +1217,6 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
         />
       )}
       
-      <KamehamehaBeam isFiring={isKamehamehaFiring} isCharging={isKamehamehaCharging} charge={kamehamehaCharge} />
-
       <group ref={overallScaleRef}>
         <group ref={bodyRef} position={[0, BODY_Y, 0]}>
 
@@ -1169,7 +1537,7 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
     meleeSpinRequestTick, jumpRequestTick, isDodging, 
     isStanceActive, playerSpawnPos, triggerHitImpact, damageEnemy, damageTownNPC, damageEnvironment,
     comboStep, setComboStep, isAttacking, setAttacking, isSpinning, setSpinning, lastAttackTime,
-    currentSpeed, isGrounded,
+    currentSpeed, isGrounded, isFirstPerson,
     isKamehamehaCharging, isKamehamehaFiring, kamehamehaCharge, setKamehamehaCharging, setKamehamehaFiring, useMana
   } = useGameStore();
 
@@ -1193,7 +1561,6 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
     hitList.current.clear(); 
   }, [comboStep, isSpinning]);
 
-  const debugFrameCount = useRef(0);
   useFrame((state, delta) => {
     if (!rigidBody.current || isGameOver) return;
 
@@ -1211,18 +1578,6 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
     const toi = rayHit != null ? (rayHit as { toi: number }).toi : null;
     const actuallyGrounded = rayHit != null && toi != null && toi < 1.2;
     useGameStore.setState({ isGrounded: actuallyGrounded });
-
-    // #region agent log
-    debugFrameCount.current += 1;
-    if (debugFrameCount.current % 20 === 0) {
-      const terrainY = getTerrainHeight(currentPos.x, currentPos.z);
-      const feetY = currentPos.y - 0.05;
-      const diffFeetVsTerrain = feetY - terrainY;
-      fetch('http://127.0.0.1:7931/ingest/80470fea-84bf-4b5b-9da7-e664b9ea4c80', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'b46e66' }, body: JSON.stringify({ sessionId: 'b46e66', runId: 'post-fix', hypothesisId: 'H1', location: 'Player.tsx:ground-ray', message: 'ray down', data: { rayHit: !!rayHit, toi, actuallyGrounded }, timestamp: Date.now() }) }).catch(() => {});
-      fetch('http://127.0.0.1:7931/ingest/80470fea-84bf-4b5b-9da7-e664b9ea4c80', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'b46e66' }, body: JSON.stringify({ sessionId: 'b46e66', runId: 'post-fix', hypothesisId: 'H2', location: 'Player.tsx:height', message: 'body vs terrain', data: { posY: currentPos.y, terrainY, feetY, diffFeetVsTerrain, velY: cv.y }, timestamp: Date.now() }) }).catch(() => {});
-      fetch('http://127.0.0.1:7931/ingest/80470fea-84bf-4b5b-9da7-e664b9ea4c80', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'b46e66' }, body: JSON.stringify({ sessionId: 'b46e66', runId: 'post-fix', hypothesisId: 'H3', location: 'Player.tsx:ray-ground', message: 'hit point vs terrain', data: { toi, hitGroundY: toi != null ? ro.y - toi : null, terrainY }, timestamp: Date.now() }) }).catch(() => {});
-    }
-    // #endregion
 
     // --- KAMEHAMEHA LOGIC ---
     if (isKamehamehaCharging) {
@@ -1381,6 +1736,13 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
         const cf = new THREE.Vector3(); state.camera.getWorldDirection(cf); cf.y = 0; cf.normalize();
         const cr = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), cf).negate();
         if (forward) mv.add(cf); if (backward) mv.sub(cf); if (left) mv.sub(cr); if (right) mv.add(cr);
+
+        // First person: the body always faces where the camera looks, so sword
+        // swings (hit detection still runs on the hidden model) land where you aim.
+        if (isFirstPerson && playerMeshGroup.current && cf.lengthSq() > 0.0001) {
+            playerMeshGroup.current.quaternion.slerp(
+                new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(cf.x, cf.z)), 0.4);
+        }
         if (joystickVector?.lengthSq() > 0.01) mv.add(cf.clone().multiplyScalar(-joystickVector.y)).add(cr.clone().multiplyScalar(joystickVector.x));
         
         // --- FINITE VALUE PROTECTION ---
@@ -1398,7 +1760,9 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
             let ts = MOVEMENT_SPEED * (isStanceActive ? STANCE_SPEED_MULT : 1.0);
             if (run) ts *= 1.5;
             vx = mv.x * ts; vz = mv.z * ts;
-            playerMeshGroup.current!.quaternion.slerp(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(vx, vz)), 0.2);
+            if (!isFirstPerson) {
+                playerMeshGroup.current!.quaternion.slerp(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(vx, vz)), 0.2);
+            }
 
             // --- ADVANCED TOE-TO-KNEE DUAL RAYCAST STEP-UP LOGIC ---
             const rayDirVec = { x: mv.x, y: 0, z: mv.z };
@@ -1450,18 +1814,22 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
   });
 
   return (
-    <RigidBody 
-      ref={rigidBody} 
-      colliders={false} 
-      position={playerSpawnPos} 
-      enabledRotations={[false, false, false]} 
-      friction={0.5} 
-      restitution={0} 
+    <>
+    <RigidBody
+      ref={rigidBody}
+      colliders={false}
+      position={playerSpawnPos}
+      enabledRotations={[false, false, false]}
+      friction={0.5}
+      restitution={0}
       userData={{ type: 'PLAYER' }}
     >
         <CapsuleCollider args={[0.5, 0.45]} position={[0, 0.9, 0]} contactSkin={0.02} />
         <group ref={playerMeshGroup} position={[0, -0.05, 0]} rotation={[0, Math.PI, 0]}>
-            <SquirrelModel 
+            {/* Hidden (not unmounted) in first person: animations and sword hit
+                detection keep running on the invisible model */}
+            <group visible={!isFirstPerson}>
+            <SquirrelModel
                 swordTipRef={swordTipRef} swordBaseRef={swordBaseRef}
                 comboStep={comboStep} lastAttackTime={lastAttackTime} isMoving={currentSpeed > 0.5} 
                 isDodging={isDodging} isStanceActive={isStanceActive} 
@@ -1472,10 +1840,15 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
 
                 isMeleeCharging={useGameStore.getState().isMeleeCharging}
                 meleeCharge={useGameStore.getState().meleeCharge} isAttacking={isAttacking} isSpinning={isSpinning}
-                moveSpeed={currentSpeed} verticalVelocity={0} isGrounded={isGrounded} 
+                moveSpeed={currentSpeed} verticalVelocity={0} isGrounded={isGrounded}
             />
+            </group>
             <SpinVFX active={isSpinning} position={new THREE.Vector3(0, 0.8, 0)} />
+            {/* Outside the FP-hidden wrapper so the beam renders in first person too */}
+            <KamehamehaVFX isFiring={isKamehamehaFiring} isCharging={isKamehamehaCharging} charge={kamehamehaCharge} />
         </group>
     </RigidBody>
+    {isFirstPerson && <FirstPersonArms />}
+    </>
   );
 };

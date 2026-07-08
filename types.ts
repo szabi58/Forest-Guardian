@@ -120,6 +120,8 @@ export interface GameState {
   cameraDelta: Vector2;
   cameraJoystickVector: Vector2;
   isCameraJoystickActive: boolean;
+  isFirstPerson: boolean;
+  setFirstPerson: (v: boolean) => void;
   
   // Interior Logic
   isInsideBuildingId: string | null;

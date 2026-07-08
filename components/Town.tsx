@@ -2138,14 +2138,18 @@ export const TownSystem: React.FC<{ playerRef: React.RefObject<THREE.Object3D> }
     const townAnimals = useGameStore(s => s.townAnimals);
     const townChildren = useGameStore(s => s.townChildren);
 
-    // Solid floor under the whole town so the player doesn't fall through (trimesh is unreliable here)
+    // Safety floor under the whole town so the player can't fall through if the
+    // terrain trimesh ever fails. Its TOP surface must sit just BELOW the visible
+    // ground (the cuboid is centered, so offset by its half-height plus 2cm):
+    // when it was centered at ground level, its top face floated 0.5 above the
+    // terrain and everything in mid-town stood on an invisible ledge.
     const townFloorY = getTerrainHeight(32, 5);
     const townFloorHalfX = 65;
     const townFloorHalfZ = 52;
 
     return (
         <group>
-            <RigidBody type="fixed" position={[37, townFloorY, 5]} friction={1} colliders={false}>
+            <RigidBody type="fixed" position={[37, townFloorY - 0.52, 5]} friction={1} colliders={false}>
                 <CuboidCollider args={[townFloorHalfX, 0.5, townFloorHalfZ]} />
             </RigidBody>
             <Fountain position={[35, 0, 5]} />

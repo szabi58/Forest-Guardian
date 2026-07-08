@@ -14,7 +14,7 @@ import { CameraController } from './CameraController';
 import { UI } from './UI';
 import { AudioSystem } from './AudioSystem';
 import { GamepadHandler } from './GamepadHandler';
-import { useGameStore } from '../store';
+import { useGameStore, cameraZoom, cameraControl, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX } from '../store';
 import * as THREE from 'three';
 
 const keyboardMap = [
@@ -29,64 +29,96 @@ const keyboardMap = [
   { name: 'stance', keys: ['q', 'Q'] },
 ];
 
+const WHEEL_ZOOM_SPEED = 0.01;   // world units per wheel deltaY unit (~1 unit per notch)
+const PINCH_ZOOM_SPEED = 0.025;  // world units per pixel of pinch distance change
+
 const LookController: React.FC = () => {
     const setCameraDelta = useGameStore(s => s.setCameraDelta);
     const setActiveDialoguePartner = useGameStore(s => s.setActiveDialoguePartner);
     const isPaused = useGameStore(s => s.isPaused);
+    // All pointers currently down on the canvas: 1 = orbit drag, 2 = pinch zoom
+    const pointers = useRef(new Map<number, { x: number; y: number }>());
+    const lastPinchDist = useRef<number | null>(null);
     const lastPos = useRef({ x: 0, y: 0 });
-    const startPos = useRef({ x: 0, y: 0 });
-    const startTime = useRef(0);
-    const hasMovedSignificantly = useRef(false);
-    const isPointerDown = useRef(false);
     const { gl } = useThree();
-    
+
     useEffect(() => {
+        const pinchDistance = (): number | null => {
+            if (pointers.current.size < 2) return null;
+            const [a, b] = Array.from(pointers.current.values());
+            return Math.hypot(b.x - a.x, b.y - a.y);
+        };
+
         const handleDown = (e: PointerEvent) => {
             if (isPaused || (e.target as HTMLElement).closest('.pointer-events-auto')) return;
-            
-            isPointerDown.current = true;
-            const now = Date.now();
-            startTime.current = now;
-            startPos.current = { x: e.clientX, y: e.clientY };
+
+            pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
             lastPos.current = { x: e.clientX, y: e.clientY };
-            hasMovedSignificantly.current = false;
+            cameraControl.dragging = true;
+            // Second finger down: switch from orbiting to pinching
+            lastPinchDist.current = pinchDistance();
         };
 
         const handleMove = (e: PointerEvent) => {
-            if (isPaused || !isPointerDown.current) return;
-            
-            const dx = e.clientX - lastPos.current.x;
-            const dy = e.clientY - lastPos.current.y;
-            
-            const totalDist = Math.sqrt(Math.pow(e.clientX - startPos.current.x, 2) + Math.pow(e.clientY - startPos.current.y, 2));
-            if (totalDist > 10) {
-                hasMovedSignificantly.current = true;
+            if (isPaused || !pointers.current.has(e.pointerId)) return;
+            pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+            if (pointers.current.size >= 2) {
+                // PINCH ZOOM: fingers together = zoom in, apart = zoom out
+                const dist = pinchDistance();
+                if (dist !== null && lastPinchDist.current !== null) {
+                    cameraZoom.target = THREE.MathUtils.clamp(
+                        cameraZoom.target + (dist - lastPinchDist.current) * PINCH_ZOOM_SPEED,
+                        CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX
+                    );
+                }
+                lastPinchDist.current = dist;
+                return;
             }
 
+            // Single pointer: orbit the camera
+            const dx = e.clientX - lastPos.current.x;
+            const dy = e.clientY - lastPos.current.y;
             lastPos.current = { x: e.clientX, y: e.clientY };
-            const normalizedX = dx / window.innerWidth;
-            const normalizedY = dy / window.innerHeight;
-            setCameraDelta(new THREE.Vector2(normalizedX, normalizedY));
+            setCameraDelta(new THREE.Vector2(dx / window.innerWidth, dy / window.innerHeight));
         };
 
         const handleUp = (e: PointerEvent) => {
-            if (isPaused || !isPointerDown.current) {
-                isPointerDown.current = false;
-                return;
+            if (!pointers.current.has(e.pointerId)) return;
+            pointers.current.delete(e.pointerId);
+            lastPinchDist.current = null;
+            if (pointers.current.size === 0) cameraControl.dragging = false;
+            // If one finger remains after a pinch, restart the orbit drag from
+            // its current position so the camera doesn't jump.
+            if (pointers.current.size === 1) {
+                const remaining = Array.from(pointers.current.values())[0];
+                lastPos.current = { x: remaining.x, y: remaining.y };
             }
-            isPointerDown.current = false;
             // Short taps are used to interact with NPCs; don't auto-close dialogue here.
             // Dialogue will close when you walk away or another NPC starts talking.
             setCameraDelta(new THREE.Vector2(0, 0));
         };
 
+        const handleWheel = (e: WheelEvent) => {
+            if (isPaused) return;
+            e.preventDefault();
+            cameraZoom.target = THREE.MathUtils.clamp(
+                cameraZoom.target + e.deltaY * WHEEL_ZOOM_SPEED,
+                CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX
+            );
+        };
+
         gl.domElement.addEventListener('pointerdown', handleDown);
         window.addEventListener('pointermove', handleMove);
         window.addEventListener('pointerup', handleUp);
+        window.addEventListener('pointercancel', handleUp);
+        gl.domElement.addEventListener('wheel', handleWheel, { passive: false });
         return () => {
             gl.domElement.removeEventListener('pointerdown', handleDown);
             window.removeEventListener('pointermove', handleMove);
             window.removeEventListener('pointerup', handleUp);
+            window.removeEventListener('pointercancel', handleUp);
+            gl.domElement.removeEventListener('wheel', handleWheel);
         };
     }, [gl, setCameraDelta, setActiveDialoguePartner, isPaused]);
 

@@ -15,6 +15,18 @@ export const liveTownNPCPositions: Record<string, [number, number, number]> = {}
 export const liveTownChildPositions: Record<string, [number, number, number]> = {};
 export const livePlayerPosition: [number, number, number] = [25, 0, 12];
 
+// Camera zoom target (world units behind the player). Mutated directly by input
+// handlers (wheel / pinch) and read every frame by the CameraController — kept
+// outside zustand state so zoom scrubbing never triggers React re-renders.
+export const CAMERA_ZOOM_MIN = 0;
+export const CAMERA_ZOOM_MAX = 15;
+export const cameraZoom = { target: 8.5 };
+
+// True while a pointer/touch is actively dragging the camera. The controller
+// uses this to hard-pause auto-follow so manual orbit and follow never both
+// apply rotation in the same frame.
+export const cameraControl = { dragging: false };
+
 export const getEnemyLivePos = (id: string, fallback: [number, number, number]): [number, number, number] =>
     liveEnemyPositions[id] ?? fallback;
 
@@ -198,6 +210,15 @@ const createForest = (): EnvironmentObjectData[] => {
         const y = getTerrainHeight(x, z);
         objects.push({ id: `tree-${i}`, type: 'TREE', variant, position: [x, y, z], scale, hp: 50 * scale, maxHp: 50 * scale, rootDepth: 0.4 });
     }
+    // Scattered boulders in the wilderness (visual variety + cover)
+    for(let i=0; i<28; i++) {
+        const scale = 0.4 + Math.random() * 0.9;
+        const x = (Math.random() - 0.5) * 240;
+        const z = (Math.random() - 0.5) * 240;
+        if (x > -30 && x < 105 && z > -50 && z < 65) continue; // Same town exclusion zone
+        const y = getTerrainHeight(x, z);
+        objects.push({ id: `rock-${i}`, type: 'ROCK', position: [x, y, z], scale, hp: 200, maxHp: 200, rootDepth: 0 });
+    }
     return objects;
 };
 
@@ -245,6 +266,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   cameraJoystickVector: new Vector2(0, 0),
   isCameraJoystickActive: false,
   cameraDelta: new Vector2(0, 0),
+  isFirstPerson: false,
+  setFirstPerson: (v) => set((state) => (state.isFirstPerson === v ? state : { isFirstPerson: v })),
   isInsideBuildingId: null,
   setIsInsideBuilding: (id) => set({ isInsideBuildingId: id }),
   activeDialoguePartner: null,
