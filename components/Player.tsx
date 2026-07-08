@@ -702,6 +702,52 @@ const swingEase = (p: number): number => {
   return 1;
 };
 
+// --- TWO-BONE ARM IK ---
+// Each arm is a shoulder -> elbow -> hand chain. Poses are authored as hand
+// targets (in the torso's local space) plus a pole hint for where the elbow
+// should point; the solver rotates the shoulder and bends the elbow hinge so
+// the hand lands on the target. Arms therefore always stay attached at the
+// shoulder and the elbow bends naturally as the hand gets closer to the body.
+const ARM_UPPER_LEN = 0.24;
+const ARM_FORE_LEN = 0.24;
+const ARM_MAX_REACH = ARM_UPPER_LEN + ARM_FORE_LEN - 0.015;
+const ARM_REST_DIR = new THREE.Vector3(0, -1, 0); // arms hang straight down at rest
+const _ikReach = new THREE.Vector3();
+const _ikBendAxis = new THREE.Vector3();
+const _ikUpperDir = new THREE.Vector3();
+const _ikLocalX = new THREE.Vector3();
+const _ikCross = new THREE.Vector3();
+const _ikQ = new THREE.Quaternion();
+const _ikTwist = new THREE.Quaternion();
+
+const solveArmIK = (
+  shoulder: THREE.Group, elbow: THREE.Group,
+  target: THREE.Vector3, pole: THREE.Vector3, blend: number
+) => {
+  _ikReach.copy(target).sub(shoulder.position);
+  const d = THREE.MathUtils.clamp(_ikReach.length(), 0.1, ARM_MAX_REACH);
+  _ikReach.normalize();
+  _ikBendAxis.crossVectors(_ikReach, pole);
+  if (_ikBendAxis.lengthSq() < 1e-6) _ikBendAxis.set(1, 0, 0);
+  _ikBendAxis.normalize();
+  // Law of cosines: shoulder lift off the reach line + interior elbow angle
+  const cosLift = (ARM_UPPER_LEN * ARM_UPPER_LEN + d * d - ARM_FORE_LEN * ARM_FORE_LEN) / (2 * ARM_UPPER_LEN * d);
+  const lift = Math.acos(THREE.MathUtils.clamp(cosLift, -1, 1));
+  const cosElbow = (ARM_UPPER_LEN * ARM_UPPER_LEN + ARM_FORE_LEN * ARM_FORE_LEN - d * d) / (2 * ARM_UPPER_LEN * ARM_FORE_LEN);
+  const bend = Math.PI - Math.acos(THREE.MathUtils.clamp(cosElbow, -1, 1));
+  _ikUpperDir.copy(_ikReach).applyAxisAngle(_ikBendAxis, lift);
+  _ikQ.setFromUnitVectors(ARM_REST_DIR, _ikUpperDir);
+  // Twist the shoulder so the elbow's local X (its hinge) lies on the bend axis
+  _ikLocalX.set(1, 0, 0).applyQuaternion(_ikQ);
+  _ikCross.crossVectors(_ikLocalX, _ikBendAxis);
+  const twist = Math.atan2(_ikCross.dot(_ikUpperDir), THREE.MathUtils.clamp(_ikLocalX.dot(_ikBendAxis), -1, 1));
+  _ikTwist.setFromAxisAngle(_ikUpperDir, twist).multiply(_ikQ);
+  shoulder.quaternion.slerp(_ikTwist, blend);
+  elbow.rotation.x = THREE.MathUtils.lerp(elbow.rotation.x, -bend, blend);
+  elbow.rotation.y = 0;
+  elbow.rotation.z = 0;
+};
+
 // --- FIRST-PERSON ARMS ---
 // Shown instead of the squirrel model when the camera zooms in past the FP
 // threshold. Glued to the camera every frame; swings reuse the same combo
@@ -712,10 +758,17 @@ const FirstPersonArms: React.FC = () => {
   const rigRef = useRef<THREE.Group>(null);
   const rightPivotRef = useRef<THREE.Group>(null);
   const leftPivotRef = useRef<THREE.Group>(null);
+  const rightElbowRef = useRef<THREE.Group>(null);
+  const leftElbowRef = useRef<THREE.Group>(null);
+  const swordWrapRef = useRef<THREE.Group>(null);
   const fpTipRef = useRef<THREE.Group>(null);
   const fpBaseRef = useRef<THREE.Group>(null);
   const spinStart = useRef(0);
   const wasSpinning = useRef(false);
+  const kameExt = useRef(0);
+  const basePosR = useMemo(() => new THREE.Vector3(0.38, -0.32, -0.25), []);
+  const basePosL = useMemo(() => new THREE.Vector3(-0.38, -0.34, -0.25), []);
+  const tmpPos = useMemo(() => new THREE.Vector3(), []);
 
   const isAttacking = useGameStore(s => s.isAttacking);
   const isSpinning = useGameStore(s => s.isSpinning);
@@ -728,7 +781,7 @@ const FirstPersonArms: React.FC = () => {
   const gloveMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#f2f4f7', roughness: 0.25, metalness: 0.15 }), []);
   const furMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#96602e', roughness: 0.95 }), []);
 
-  useFrame((state) => {
+  useFrame((state, delta) => {
     const g = groupRef.current;
     if (!g) return;
     // Glue the rig to the camera every frame
@@ -749,6 +802,38 @@ const FirstPersonArms: React.FC = () => {
     const right = rightPivotRef.current;
     const left = leftPivotRef.current;
     if (!right || !left) return;
+    const rElbow = rightElbowRef.current;
+    const lElbow = leftElbowRef.current;
+
+    const kameActive = store.isKamehamehaCharging || store.isKamehamehaFiring;
+    kameExt.current = THREE.MathUtils.lerp(
+      kameExt.current, store.isKamehamehaFiring ? 1 : 0, 1 - Math.exp(-10 * delta));
+    // Blade tucks upward out of the beam's way during the kamehameha
+    if (swordWrapRef.current) {
+      swordWrapRef.current.rotation.x = THREE.MathUtils.lerp(
+        swordWrapRef.current.rotation.x, kameActive ? 1.25 : 0, 0.15);
+    }
+
+    if (kameActive) {
+      // Both hands come together at the center of the view, cupped around the
+      // orb while charging, then push forward with the beam.
+      const ext = kameExt.current;
+      right.position.lerp(tmpPos.set(0.13, -0.33, -0.28 - ext * 0.14), 0.2);
+      left.position.lerp(tmpPos.set(-0.13, -0.33, -0.28 - ext * 0.14), 0.2);
+      const inward = THREE.MathUtils.lerp(0.15, 0.08, ext);
+      right.rotation.x = THREE.MathUtils.lerp(right.rotation.x, -0.1, 0.2);
+      right.rotation.y = THREE.MathUtils.lerp(right.rotation.y, inward, 0.2);
+      right.rotation.z = THREE.MathUtils.lerp(right.rotation.z, 0, 0.2);
+      left.rotation.x = THREE.MathUtils.lerp(left.rotation.x, -0.1, 0.2);
+      left.rotation.y = THREE.MathUtils.lerp(left.rotation.y, -inward, 0.2);
+      left.rotation.z = THREE.MathUtils.lerp(left.rotation.z, 0, 0.2);
+      const bend = THREE.MathUtils.lerp(0.5 + store.kamehamehaCharge * 0.25, 0.12, ext);
+      if (rElbow) rElbow.rotation.x = THREE.MathUtils.lerp(rElbow.rotation.x, bend, 0.2);
+      if (lElbow) lElbow.rotation.x = THREE.MathUtils.lerp(lElbow.rotation.x, bend, 0.2);
+      return;
+    }
+    right.position.lerp(basePosR, 0.15);
+    left.position.lerp(basePosL, 0.15);
 
     // Spin attack: whirl the blade a full turn across the view
     if (store.isSpinning) {
@@ -756,6 +841,8 @@ const FirstPersonArms: React.FC = () => {
       const sp = THREE.MathUtils.clamp((Date.now() - spinStart.current) / SPIN_DURATION, 0, 1);
       right.rotation.set(0.2, -Math.PI + sp * Math.PI * 2, 0);
       left.rotation.set(-0.5, 0.3, 0);
+      if (rElbow) rElbow.rotation.x = 0.25;
+      if (lElbow) lElbow.rotation.x = 0.5;
       return;
     }
     wasSpinning.current = false;
@@ -764,6 +851,10 @@ const FirstPersonArms: React.FC = () => {
       const progress = THREE.MathUtils.clamp((Date.now() - store.lastAttackTime) / 400, 0, 1);
       const e = swingEase(progress);
       const e01 = THREE.MathUtils.clamp((e + 0.3) / 1.3, 0, 1);
+      // Elbow coils on the windup and extends through the strike
+      const strikeBend = store.comboStep === 3 ? 0.75 - 0.6 * e01 : 0.55 - 0.5 * e01;
+      if (rElbow) rElbow.rotation.x = strikeBend;
+      if (lElbow) lElbow.rotation.x = 0.45;
       if (store.comboStep === 1) {
         // Horizontal slash, right to left
         right.rotation.set(
@@ -797,60 +888,76 @@ const FirstPersonArms: React.FC = () => {
     const charge = store.isMeleeCharging ? store.meleeCharge : 0;
     const tremble = charge > 0 ? Math.sin(t * 45) * 0.02 * charge : 0;
     const idleSway = Math.sin(t * 1.6) * 0.03;
-    right.rotation.x = THREE.MathUtils.lerp(right.rotation.x, 1.15 + idleSway + charge * 0.45 + tremble, 0.15);
-    right.rotation.y = THREE.MathUtils.lerp(right.rotation.y, -0.5 - charge * 0.4, 0.15);
+    // Shoulder pitch + elbow curl together put the blade where the old rigid
+    // arm did, but with a visible bent elbow instead of a straight stick.
+    right.rotation.x = THREE.MathUtils.lerp(right.rotation.x, 0.5 + idleSway + charge * 0.45 + tremble, 0.15);
+    right.rotation.y = THREE.MathUtils.lerp(right.rotation.y, -0.45 - charge * 0.4, 0.15);
     right.rotation.z = THREE.MathUtils.lerp(right.rotation.z, -0.3 + tremble, 0.15);
-    left.rotation.x = THREE.MathUtils.lerp(left.rotation.x, -0.45 + idleSway * 0.7, 0.12);
+    left.rotation.x = THREE.MathUtils.lerp(left.rotation.x, -0.3 + idleSway * 0.7, 0.12);
     left.rotation.y = THREE.MathUtils.lerp(left.rotation.y, 0.25, 0.12);
     left.rotation.z = THREE.MathUtils.lerp(left.rotation.z, 0.15, 0.12);
+    if (rElbow) rElbow.rotation.x = THREE.MathUtils.lerp(rElbow.rotation.x, 0.4 + charge * 0.4, 0.15);
+    if (lElbow) lElbow.rotation.x = THREE.MathUtils.lerp(lElbow.rotation.x, 0.35, 0.12);
   });
 
   return (
     <group ref={groupRef}>
       <group ref={rigRef}>
-        {/* Right arm holding the sword */}
+        {/* Right arm holding the sword: shoulder -> elbow -> glove */}
         <group ref={rightPivotRef} position={[0.38, -0.32, -0.25]}>
-          <mesh position={[0, 0, -0.28]} rotation={[Math.PI / 2, 0, 0]}>
-            <cylinderGeometry args={[0.055, 0.07, 0.5, 10]} />
+          <mesh position={[0, 0, -0.16]} rotation={[Math.PI / 2, 0, 0]}>
+            <cylinderGeometry args={[0.058, 0.07, 0.27, 10]} />
             <primitive object={suitBlueMat} attach="material" />
           </mesh>
-          <mesh position={[0, 0, -0.06]}>
+          <mesh position={[0, 0, -0.04]}>
             <sphereGeometry args={[0.075, 10, 8]} />
             <primitive object={furMat} attach="material" />
           </mesh>
-          <mesh position={[0, 0, -0.55]}>
-            <sphereGeometry args={[0.095, 12, 10]} />
-            <primitive object={gloveMat} attach="material" />
-          </mesh>
-          {/* Same DreadSword as third person; wrapper flips it to point down-range */}
-          <group position={[0, -0.02, -0.56]} rotation={[0, Math.PI, 0]} scale={0.7}>
-            <DreadSword
-              isAttacking={isAttacking}
-              isSpinning={isSpinning}
-              isCharging={isMeleeCharging}
-              charge={meleeCharge}
-              comboStep={comboStep}
-              lastAttackTime={lastAttackTime}
-              tipRef={fpTipRef}
-              baseRef={fpBaseRef}
-            />
+          <group ref={rightElbowRef} position={[0, 0, -0.29]}>
+            <mesh position={[0, 0, -0.13]} rotation={[Math.PI / 2, 0, 0]}>
+              <cylinderGeometry args={[0.05, 0.06, 0.26, 10]} />
+              <primitive object={suitBlueMat} attach="material" />
+            </mesh>
+            <mesh position={[0, 0, -0.26]}>
+              <sphereGeometry args={[0.095, 12, 10]} />
+              <primitive object={gloveMat} attach="material" />
+            </mesh>
+            {/* Same DreadSword as third person; wrapper flips it to point down-range */}
+            <group ref={swordWrapRef} position={[0, -0.02, -0.27]} rotation={[0, Math.PI, 0]} scale={0.7}>
+              <DreadSword
+                isAttacking={isAttacking}
+                isSpinning={isSpinning}
+                isCharging={isMeleeCharging}
+                charge={meleeCharge}
+                comboStep={comboStep}
+                lastAttackTime={lastAttackTime}
+                tipRef={fpTipRef}
+                baseRef={fpBaseRef}
+              />
+            </group>
           </group>
         </group>
 
-        {/* Left arm — free hand for balance */}
+        {/* Left arm — free hand for balance: shoulder -> elbow -> glove */}
         <group ref={leftPivotRef} position={[-0.38, -0.34, -0.25]}>
-          <mesh position={[0, 0, -0.24]} rotation={[Math.PI / 2, 0, 0]}>
-            <cylinderGeometry args={[0.05, 0.065, 0.42, 10]} />
+          <mesh position={[0, 0, -0.13]} rotation={[Math.PI / 2, 0, 0]}>
+            <cylinderGeometry args={[0.054, 0.065, 0.24, 10]} />
             <primitive object={suitBlueMat} attach="material" />
           </mesh>
-          <mesh position={[0, 0, -0.05]}>
+          <mesh position={[0, 0, -0.03]}>
             <sphereGeometry args={[0.07, 10, 8]} />
             <primitive object={furMat} attach="material" />
           </mesh>
-          <mesh position={[0, 0, -0.47]}>
-            <sphereGeometry args={[0.085, 12, 10]} />
-            <primitive object={gloveMat} attach="material" />
-          </mesh>
+          <group ref={leftElbowRef} position={[0, 0, -0.24]}>
+            <mesh position={[0, 0, -0.11]} rotation={[Math.PI / 2, 0, 0]}>
+              <cylinderGeometry args={[0.048, 0.058, 0.2, 10]} />
+              <primitive object={suitBlueMat} attach="material" />
+            </mesh>
+            <mesh position={[0, 0, -0.23]}>
+              <sphereGeometry args={[0.085, 12, 10]} />
+              <primitive object={gloveMat} attach="material" />
+            </mesh>
+          </group>
         </group>
       </group>
     </group>
@@ -886,8 +993,11 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
   const rightKneeRef = useRef<THREE.Group>(null);
   const leftFootRef = useRef<THREE.Group>(null);
   const rightFootRef = useRef<THREE.Group>(null);
-  const leftArmRef = useRef<THREE.Group>(null);
-  const rightArmRef = useRef<THREE.Group>(null);
+  const leftShoulderRef = useRef<THREE.Group>(null);
+  const leftElbowRef = useRef<THREE.Group>(null);
+  const rightShoulderRef = useRef<THREE.Group>(null);
+  const rightElbowRef = useRef<THREE.Group>(null);
+  const rightHandRef = useRef<THREE.Group>(null);
   const swordPivotRef = useRef<THREE.Group>(null);
   const bodyRef = useRef<THREE.Group>(null);
   const headRef = useRef<THREE.Group>(null);
@@ -898,6 +1008,19 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
   const dodgeRotation = useRef(0);
   const [attackProgress, setAttackProgress] = useState(0);
   const tmpVec3 = useMemo(() => new THREE.Vector3(), []);
+
+  // Arm IK scratch state (targets/poles in bodyRef-local space)
+  const armTargetR = useMemo(() => new THREE.Vector3(0.375, -0.2, 0.14), []);
+  const armTargetL = useMemo(() => new THREE.Vector3(-0.375, -0.2, 0.14), []);
+  const armPoleR = useMemo(() => new THREE.Vector3(), []);
+  const armPoleL = useMemo(() => new THREE.Vector3(), []);
+  // Blade orientation is authored in body space; the wrist counter-rotates so
+  // the sword stays gripped in the glove while the blade sweeps its arc.
+  const swordEuler = useMemo(() => new THREE.Euler(-Math.PI / 3, 0, 0), []);
+  const qSwordDesired = useMemo(() => new THREE.Quaternion(), []);
+  const qHand = useMemo(() => new THREE.Quaternion(), []);
+  const qBody = useMemo(() => new THREE.Quaternion(), []);
+  const kameFireBlend = useRef(0);
 
   // Procedural Animation States
   const jumpStretch = useRef(1);
@@ -1006,26 +1129,8 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
       }
     }
 
-    // --- KAMEHAMEHA POSE LOGIC ---
-    if (isKamehamehaCharging || isKamehamehaFiring) {
-        // Bring arms together in front
-        if (leftArmRef.current) {
-            leftArmRef.current.rotation.z = -0.5;
-            leftArmRef.current.rotation.y = -0.8;
-            leftArmRef.current.position.lerp(new THREE.Vector3(-0.25, 0.3, 0.4), 0.2);
-        }
-        if (rightArmRef.current) {
-            rightArmRef.current.rotation.z = 0.5;
-            rightArmRef.current.rotation.y = 0.8;
-            rightArmRef.current.position.lerp(new THREE.Vector3(0.25, 0.3, 0.4), 0.2);
-            if(swordPivotRef.current) swordPivotRef.current.rotation.x = Math.PI;
-        }
-        if (isKamehamehaFiring && bodyRef.current) {
-            bodyRef.current.position.x = (Math.random() - 0.5) * 0.05;
-            bodyRef.current.position.z = (Math.random() - 0.5) * 0.05;
-        }
-        return; 
-    }
+    // (Kamehameha arm pose is handled in the ARM ANIMATION section below —
+    // arms stay attached at the shoulders and fold via the elbow IK.)
 
     // --- WALKING ANIMATION ---
     // Drive this purely from actual movement speed so it always plays when you move,
@@ -1068,14 +1173,6 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
         animateLeg(phaseL, -0.18, leftLegRef.current, leftKneeRef.current, leftFootRef.current);
         animateLeg(phaseR, 0.18, rightLegRef.current, rightKneeRef.current, rightFootRef.current);
 
-        // Arms: opposite to legs, with a touch of sideways sway
-        const armSwing = THREE.MathUtils.lerp(0.35, 0.7, speed01);
-        if (leftArmRef.current) {
-            leftArmRef.current.rotation.x = Math.sin(phaseR) * armSwing;
-            leftArmRef.current.rotation.z = 0.1 + Math.sin(phaseR) * 0.05;
-        }
-        if (rightArmRef.current && !isAttacking && !isSpinning) rightArmRef.current.rotation.x = Math.sin(phaseL) * armSwing;
-
         // Body: dip slightly on each foot contact (|cos| peaks at contact), light sway
         if (bodyRef.current) {
             bodyRef.current.position.y = BODY_Y - crouch - Math.abs(Math.cos(walkCycle.current)) * 0.035;
@@ -1110,10 +1207,6 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
         if (rightKneeRef.current) rightKneeRef.current.rotation.x = THREE.MathUtils.lerp(rightKneeRef.current.rotation.x, 0, 0.2);
         if (leftFootRef.current) leftFootRef.current.rotation.x = THREE.MathUtils.lerp(leftFootRef.current.rotation.x, 0, 0.2);
         if (rightFootRef.current) rightFootRef.current.rotation.x = THREE.MathUtils.lerp(rightFootRef.current.rotation.x, 0, 0.2);
-        if (leftArmRef.current) {
-            leftArmRef.current.rotation.x = THREE.MathUtils.lerp(leftArmRef.current.rotation.x, 0, 0.2);
-            leftArmRef.current.rotation.z = THREE.MathUtils.lerp(leftArmRef.current.rotation.z, 0.08, 0.2);
-        }
 
         if (bodyRef.current) {
              bodyRef.current.position.y = BODY_Y - crouch + Math.sin(t * 2) * 0.006;
@@ -1121,68 +1214,146 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
         }
     }
 
-    // --- SWORD ARM LOGIC ---
-    if (rightArmRef.current && swordPivotRef.current) {
-      // Arms: only rotate around the shoulder pivot so they always stay attached.
-      // Sword: always attached to the hand; we just change its rotation for stance/attacks.
+    // --- ARM ANIMATION (two-bone IK) ---
+    // Every pose is a pair of hand targets + elbow pole hints in body space;
+    // solveArmIK keeps the arms attached at the shoulders and bends the elbows.
+    // The blade's arc is authored in body space (swordEuler) and applied at the
+    // wrist relative to the hand, so swings sweep the same world-space paths the
+    // hit detection was tuned for while the arm itself does the swinging.
+    const armBlend = 1 - Math.exp(-14 * delta);
+    const swingBlend = 1 - Math.exp(-30 * delta);
+    let armLerp = armBlend;
+    armPoleR.set(0.75, -0.35, -0.55);
+    armPoleL.set(-0.75, -0.35, -0.55);
 
-      if (isSpinning) {
-          // Big circular spin: arm slightly lifted, sword out
-          rightArmRef.current.rotation.x = -0.6;
-          rightArmRef.current.rotation.y = 0.3;
-          swordPivotRef.current.rotation.set(-Math.PI / 2, 0, 0);
-      } else if (isAttacking && comboStep > 0) {
+    kameFireBlend.current = THREE.MathUtils.lerp(
+        kameFireBlend.current, isKamehamehaFiring ? 1 : 0, 1 - Math.exp(-10 * delta));
+
+    if (isKamehamehaCharging || isKamehamehaFiring) {
+        // Charge: both hands cupped together at chest height around the orb,
+        // elbows flared down-and-out. Fire: arms thrust forward toward the
+        // beam origin, elbows extending but never locking straight.
+        const ext = kameFireBlend.current;
+        const reachZ = THREE.MathUtils.lerp(0.34 + kamehamehaCharge * 0.06, 0.46, ext);
+        const spread = THREE.MathUtils.lerp(0.07, 0.055, ext);
+        const reachY = THREE.MathUtils.lerp(0.02, 0.06, ext);
+        armTargetR.set(spread, reachY, reachZ);
+        armTargetL.set(-spread, reachY, reachZ);
+        armPoleR.set(0.9, -0.5, -0.15);
+        armPoleL.set(-0.9, -0.5, -0.15);
+        // Blade rides upright in the grip, tilted off to the side of the beam
+        swordEuler.x = THREE.MathUtils.lerp(swordEuler.x, -1.75, 0.15);
+        swordEuler.y = THREE.MathUtils.lerp(swordEuler.y, 0, 0.15);
+        swordEuler.z = THREE.MathUtils.lerp(swordEuler.z, 0.4, 0.15);
+        if (isKamehamehaFiring && bodyRef.current) {
+            bodyRef.current.position.x = (Math.random() - 0.5) * 0.05;
+            bodyRef.current.position.z = (Math.random() - 0.5) * 0.05;
+        }
+    } else if (isSpinning) {
+        armLerp = swingBlend;
+        armTargetR.set(0.5, 0.3, 0.1);
+        armTargetL.set(-0.5, 0.25, -0.05);
+        swordEuler.set(-Math.PI / 2, 0, 0);
+    } else if (isAttacking && comboStep > 0) {
         // Eased swing: windup pulls back past the start, strike whips through fast,
         // then holds in follow-through. Torso twists with the blade for weight.
+        armLerp = swingBlend;
         const e = swingEase(progress);
         const e01 = THREE.MathUtils.clamp((e + 0.3) / 1.3, 0, 1);
 
         if (comboStep === 1) {
-            // Horizontal right-to-left slash
-            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(-0.2, -0.55, e01);
-            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(0.55, 0.05, e01);
-            swordPivotRef.current.rotation.set(-Math.PI / 2, 0.9 + (-1.7 - 0.9) * e, 0);
+            // Horizontal right-to-left slash: hand sweeps an arc around the body
+            const az = THREE.MathUtils.lerp(1.75, -1.45, e01);
+            armTargetR.set(
+                0.05 + Math.sin(az) * 0.46,
+                THREE.MathUtils.lerp(0.32, 0.1, e01),
+                0.06 + Math.cos(az) * 0.46
+            );
+            armTargetL.set(-0.44, THREE.MathUtils.lerp(0.1, 0.28, e01), THREE.MathUtils.lerp(0.22, -0.15, e01));
+            swordEuler.set(-Math.PI / 2, 0.9 - 2.6 * e, 0);
             if (bodyRef.current) {
                 bodyRef.current.rotation.y = 0.4 - 0.85 * e01;
                 bodyRef.current.rotation.x = (isMoving ? 0.12 : 0) + 0.08 * Math.sin(e01 * Math.PI);
             }
         } else if (comboStep === 2) {
-            // Return slash left-to-right
-            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(-0.15, -0.45, e01);
-            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(-0.5, 0.0, e01);
-            swordPivotRef.current.rotation.set(-Math.PI / 2, -1.7 + (0.9 + 1.7) * e, 0);
+            // Backhand return slash, left to right
+            const az = THREE.MathUtils.lerp(-1.75, 1.45, e01);
+            armTargetR.set(
+                0.05 + Math.sin(az) * 0.46,
+                THREE.MathUtils.lerp(0.28, 0.1, e01),
+                0.06 + Math.cos(az) * 0.46
+            );
+            armTargetL.set(-0.44, THREE.MathUtils.lerp(0.28, 0.1, e01), THREE.MathUtils.lerp(-0.15, 0.22, e01));
+            swordEuler.set(-Math.PI / 2, -1.7 + 2.6 * e, 0);
             if (bodyRef.current) {
                 bodyRef.current.rotation.y = -0.4 + 0.85 * e01;
                 bodyRef.current.rotation.x = (isMoving ? 0.12 : 0) + 0.08 * Math.sin(e01 * Math.PI);
             }
-        } else if (comboStep === 3) {
-            // Overhead chop: rear back, then slam down with a forward lean
-            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(-1.6, -0.6, e01);
-            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(0.1, 0, e01);
-            swordPivotRef.current.rotation.set(-2.6 + 2.8 * e, -0.15, 0);
+        } else {
+            // Overhead chop: hand rears up high behind, slams down through center
+            armTargetR.set(
+                THREE.MathUtils.lerp(0.18, 0.02, e01),
+                THREE.MathUtils.lerp(0.72, -0.05, e01),
+                THREE.MathUtils.lerp(-0.28, 0.5, e01)
+            );
+            armPoleR.set(0.9, 0.15, -0.35); // elbow flares outward through the raise
+            armTargetL.set(-0.32, THREE.MathUtils.lerp(0.5, 0.05, e01), THREE.MathUtils.lerp(-0.15, 0.25, e01));
+            swordEuler.set(-2.6 + 2.8 * e, -0.15, 0);
             if (bodyRef.current) {
                 bodyRef.current.rotation.x = THREE.MathUtils.lerp(-0.14, 0.32, e01);
                 bodyRef.current.rotation.y = THREE.MathUtils.lerp(bodyRef.current.rotation.y, 0, 0.3);
             }
         }
-      } else {
-        // Idle / walk: arms relaxed at sides, sword angled down slightly
-        if (!isMoving && !isAttacking && !isSpinning) {
-            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(rightArmRef.current.rotation.x, 0, 0.25);
-            rightArmRef.current.rotation.y = THREE.MathUtils.lerp(rightArmRef.current.rotation.y, 0.05, 0.25);
+    } else {
+        // Idle / walk / air: relaxed targets with a natural slight elbow bend
+        let swordSway = 0;
+        if (isWalkingNow) {
+            const speed01 = THREE.MathUtils.clamp(moveSpeed / 12, 0, 1);
+            const amp = THREE.MathUtils.lerp(0.14, 0.24, speed01);
+            const ph = walkCycle.current;
+            armTargetR.set(0.37, -0.16 + Math.max(0, Math.sin(ph)) * 0.05, 0.12 + Math.sin(ph) * amp);
+            armTargetL.set(-0.37, -0.16 + Math.max(0, Math.sin(ph + Math.PI)) * 0.05, 0.12 + Math.sin(ph + Math.PI) * amp);
+            swordSway = Math.sin(ph) * 0.1 * speed01;
+        } else if (!isGrounded) {
+            armTargetR.set(0.42, 0.02, 0.05);
+            armTargetL.set(-0.42, 0.02, 0.05);
+        } else {
+            armTargetR.set(0.375, -0.2 + Math.sin(t * 2) * 0.008, 0.14);
+            armTargetL.set(-0.375, -0.2 + Math.sin(t * 2 + 0.4) * 0.008, 0.14);
         }
-        swordPivotRef.current.rotation.x = THREE.MathUtils.lerp(
-            swordPivotRef.current.rotation.x,
-            isStanceActive ? -Math.PI / 2 : -Math.PI / 3,
+        // Ready stance / melee charge raises the sword hand
+        if (isStanceActive || isMeleeCharging) {
+            armTargetR.set(0.3, 0.05 + meleeCharge * 0.08, 0.3);
+        }
+        swordEuler.x = THREE.MathUtils.lerp(
+            swordEuler.x,
+            (isStanceActive || isMeleeCharging ? -Math.PI / 2 : -Math.PI / 3) + swordSway,
             0.15
         );
-        swordPivotRef.current.rotation.y = THREE.MathUtils.lerp(swordPivotRef.current.rotation.y, 0, 0.15);
-      }
+        swordEuler.y = THREE.MathUtils.lerp(swordEuler.y, 0, 0.15);
+        swordEuler.z = THREE.MathUtils.lerp(swordEuler.z, 0, 0.15);
+    }
 
-      // Reset Left Arm if not special action or moving
-      if (leftArmRef.current && !isMoving && !isAttacking && !isSpinning) {
-          leftArmRef.current.rotation.set(0, 0, 0);
-      }
+    // Decay the firing shake once the beam ends
+    if (!isKamehamehaFiring && bodyRef.current) {
+        bodyRef.current.position.x *= 0.8;
+        bodyRef.current.position.z *= 0.8;
+    }
+
+    if (rightShoulderRef.current && rightElbowRef.current) {
+        solveArmIK(rightShoulderRef.current, rightElbowRef.current, armTargetR, armPoleR, armLerp);
+    }
+    if (leftShoulderRef.current && leftElbowRef.current) {
+        solveArmIK(leftShoulderRef.current, leftElbowRef.current, armTargetL, armPoleL, armLerp);
+    }
+
+    // Sword: position rides the glove; orientation is counter-rotated at the
+    // wrist so the blade tracks swordEuler in body space regardless of arm pose.
+    if (swordPivotRef.current && rightHandRef.current && bodyRef.current) {
+        rightHandRef.current.getWorldQuaternion(qHand);
+        bodyRef.current.getWorldQuaternion(qBody);
+        qSwordDesired.setFromEuler(swordEuler);
+        swordPivotRef.current.quaternion.copy(qHand).invert().multiply(qBody).multiply(qSwordDesired);
     }
 
     // --- TAIL ANIMATION ---
@@ -1405,49 +1576,63 @@ const SquirrelModel: React.FC<SquirrelModelProps & { swordTipRef: React.RefObjec
                 </mesh>
             </group>
 
-            {/* --- ARMS: blue undersuit, white gloves --- */}
-            <group ref={leftArmRef} position={[-0.35, 0.24, 0.08]}>
-                <mesh position={[0, -0.12, 0]} castShadow>
-                    <capsuleGeometry args={[0.08, 0.18, 4, 10]} />
+            {/* --- ARMS: shoulder -> elbow -> glove chains, blue undersuit, white gloves --- */}
+            <group ref={leftShoulderRef} position={[-0.35, 0.24, 0.08]}>
+                <mesh position={[0, -0.02, 0]} castShadow>
+                    <sphereGeometry args={[0.085, 10, 8]} />
                     <primitive object={suitBlueMat} attach="material" />
                 </mesh>
-                <mesh position={[0, -0.3, 0.01]} castShadow>
-                    <capsuleGeometry args={[0.07, 0.14, 4, 10]} />
+                <mesh position={[0, -0.13, 0]} castShadow>
+                    <capsuleGeometry args={[0.075, 0.13, 4, 10]} />
                     <primitive object={suitBlueMat} attach="material" />
                 </mesh>
-                <mesh position={[0, -0.38, 0.01]}>
-                    <cylinderGeometry args={[0.085, 0.095, 0.06, 10]} />
-                    <primitive object={armorWhiteMat} attach="material" />
-                </mesh>
-                <mesh position={[0, -0.45, 0.01]} castShadow>
-                    <sphereGeometry args={[0.095, 12, 10]} />
-                    <primitive object={armorWhiteMat} attach="material" />
-                </mesh>
+                <group ref={leftElbowRef} position={[0, -0.24, 0]}>
+                    <mesh position={[0, -0.09, 0]} castShadow>
+                        <capsuleGeometry args={[0.065, 0.12, 4, 10]} />
+                        <primitive object={suitBlueMat} attach="material" />
+                    </mesh>
+                    <mesh position={[0, -0.17, 0.005]}>
+                        <cylinderGeometry args={[0.08, 0.09, 0.06, 10]} />
+                        <primitive object={armorWhiteMat} attach="material" />
+                    </mesh>
+                    <mesh position={[0, -0.24, 0.005]} castShadow>
+                        <sphereGeometry args={[0.095, 12, 10]} />
+                        <primitive object={armorWhiteMat} attach="material" />
+                    </mesh>
+                </group>
             </group>
-            <group ref={rightArmRef} position={[0.35, 0.24, 0.08]}>
-                <mesh position={[0, -0.12, 0]} castShadow>
-                    <capsuleGeometry args={[0.08, 0.18, 4, 10]} />
+            <group ref={rightShoulderRef} position={[0.35, 0.24, 0.08]}>
+                <mesh position={[0, -0.02, 0]} castShadow>
+                    <sphereGeometry args={[0.085, 10, 8]} />
                     <primitive object={suitBlueMat} attach="material" />
                 </mesh>
-                <mesh position={[0, -0.3, 0.01]} castShadow>
-                    <capsuleGeometry args={[0.07, 0.14, 4, 10]} />
+                <mesh position={[0, -0.13, 0]} castShadow>
+                    <capsuleGeometry args={[0.075, 0.13, 4, 10]} />
                     <primitive object={suitBlueMat} attach="material" />
                 </mesh>
-                <mesh position={[0, -0.38, 0.01]}>
-                    <cylinderGeometry args={[0.085, 0.095, 0.06, 10]} />
-                    <primitive object={armorWhiteMat} attach="material" />
-                </mesh>
-                <mesh position={[0, -0.45, 0.01]} castShadow>
-                    <sphereGeometry args={[0.095, 12, 10]} />
-                    <primitive object={armorWhiteMat} attach="material" />
-                </mesh>
-                {/* Sword attaches at the glove */}
-                <group ref={swordPivotRef} position={[0, -0.46, 0.02]}>
-                    <DreadSword
-                        tipRef={swordTipRef}
-                        baseRef={swordBaseRef}
-                        isAttacking={isAttacking} isSpinning={isSpinning} isCharging={isMeleeCharging} charge={meleeCharge} comboStep={comboStep} lastAttackTime={lastAttackTime}
-                    />
+                <group ref={rightElbowRef} position={[0, -0.24, 0]}>
+                    <mesh position={[0, -0.09, 0]} castShadow>
+                        <capsuleGeometry args={[0.065, 0.12, 4, 10]} />
+                        <primitive object={suitBlueMat} attach="material" />
+                    </mesh>
+                    <mesh position={[0, -0.17, 0.005]}>
+                        <cylinderGeometry args={[0.08, 0.09, 0.06, 10]} />
+                        <primitive object={armorWhiteMat} attach="material" />
+                    </mesh>
+                    {/* Hand: the sword grips here and never leaves the glove */}
+                    <group ref={rightHandRef} position={[0, -0.24, 0.005]}>
+                        <mesh castShadow>
+                            <sphereGeometry args={[0.095, 12, 10]} />
+                            <primitive object={armorWhiteMat} attach="material" />
+                        </mesh>
+                        <group ref={swordPivotRef} position={[0, -0.02, 0.02]}>
+                            <DreadSword
+                                tipRef={swordTipRef}
+                                baseRef={swordBaseRef}
+                                isAttacking={isAttacking} isSpinning={isSpinning} isCharging={isMeleeCharging} charge={meleeCharge} comboStep={comboStep} lastAttackTime={lastAttackTime}
+                            />
+                        </group>
+                    </group>
                 </group>
             </group>
 
