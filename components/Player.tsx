@@ -1718,7 +1718,7 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
 
   const [, getKeys] = useKeyboardControls();
   const { 
-    isGameOver, joystickVector, meleeRequestTick, 
+    isGameOver, joystickVector, isJoystickRunning, meleeRequestTick,
     meleeSpinRequestTick, jumpRequestTick, isDodging, 
     isStanceActive, playerSpawnPos, triggerHitImpact, damageEnemy, damageTownNPC, damageEnvironment,
     comboStep, setComboStep, isAttacking, setAttacking, isSpinning, setSpinning, lastAttackTime,
@@ -1947,7 +1947,8 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
             const inputMagnitude = Math.min(mv.length(), 1);
             mv.normalize();
             let ts = MOVEMENT_SPEED * inputMagnitude * (isStanceActive ? STANCE_SPEED_MULT : 1.0);
-            if (run) ts *= 1.5;
+            // Shift on desktop, or the stick pinned to its rim on mobile
+            if (run || isJoystickRunning) ts *= 1.5;
             vx = mv.x * ts; vz = mv.z * ts;
             if (!isFirstPerson) {
                 playerMeshGroup.current!.quaternion.slerp(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(vx, vz)), 0.2);

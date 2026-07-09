@@ -7,10 +7,14 @@ const HANDLE_SIZE = 60;
 const MAX_RADIUS = JOYSTICK_SIZE / 2;
 const TAP_THRESHOLD_MS = 200;
 const TAP_MOVE_THRESHOLD = 15;
-// Deflection (as a fraction of MAX_RADIUS) at which output saturates to 1.0.
-// Full speed doesn't require pinning the thumb exactly on the rim; pushes
-// below this remain analog for slow walking.
-const FULL_SPEED_DEFLECTION = 0.75;
+// Output response, as fractions of MAX_RADIUS:
+//   0 .. DEADZONE            -> 0 (no drift from a resting thumb)
+//   DEADZONE .. FULL_SPEED   -> analog 0..1 (fine movement)
+//   FULL_SPEED .. rim        -> exactly 1.0 = full desktop walk speed
+//   >= RUN_DEFLECTION        -> also engages the desktop Shift-run multiplier
+const DEADZONE = 0.12;
+const FULL_SPEED_DEFLECTION = 0.7;
+const RUN_DEFLECTION = 0.95;
 
 // One movement joystick driven by Pointer Events with an explicit pointer id.
 // Multi-touch safe: only the finger that started on the joystick moves it, so
@@ -20,6 +24,7 @@ const FULL_SPEED_DEFLECTION = 0.75;
 export const Joystick: React.FC = () => {
   const setJoystickVector = useGameStore((state) => state.setJoystickVector);
   const setJoystickActive = useGameStore((state) => state.setJoystickActive);
+  const setJoystickRunning = useGameStore((state) => state.setJoystickRunning);
   const triggerDodge = useGameStore((state) => state.triggerDodge);
   const isGameOver = useGameStore((state) => state.isGameOver);
   const [handlePos, setHandlePos] = useState({ x: 0, y: 0 });
@@ -46,9 +51,13 @@ export const Joystick: React.FC = () => {
     const clampedDistance = Math.min(distance, MAX_RADIUS);
     setHandlePos({ x: Math.cos(angle) * clampedDistance, y: Math.sin(angle) * clampedDistance });
 
-    // Analog magnitude with a saturation zone: edge pushes read exactly 1.0
-    const magnitude = Math.min(1, (clampedDistance / MAX_RADIUS) / FULL_SPEED_DEFLECTION);
+    // Deadzone -> analog ramp -> saturation at exactly 1.0 (see constants above)
+    const deflection = clampedDistance / MAX_RADIUS;
+    const magnitude = deflection <= DEADZONE
+      ? 0
+      : Math.min(1, (deflection - DEADZONE) / (FULL_SPEED_DEFLECTION - DEADZONE));
     setJoystickVector(new Vector2(Math.cos(angle) * magnitude, Math.sin(angle) * magnitude));
+    setJoystickRunning(deflection >= RUN_DEFLECTION);
 
     const moveDist = Math.hypot(clientX - startPos.current.x, clientY - startPos.current.y);
     if (moveDist > TAP_MOVE_THRESHOLD) {
@@ -84,6 +93,7 @@ export const Joystick: React.FC = () => {
     }
 
     setJoystickActive(false);
+    setJoystickRunning(false);
     setHandlePos({ x: 0, y: 0 });
     setJoystickVector(new Vector2(0, 0));
   };

@@ -271,6 +271,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   environmentObjects: [...PERSISTENT_ENVIRONMENT],
   joystickVector: new Vector2(0, 0),
   isJoystickActive: false,
+  isJoystickRunning: false,
   cameraJoystickVector: new Vector2(0, 0),
   isCameraJoystickActive: false,
   cameraDelta: new Vector2(0, 0),
@@ -442,6 +443,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setJoystickVector: (vec) => set({ joystickVector: vec }),
   setJoystickActive: (active) => set({ isJoystickActive: active }),
+  setJoystickRunning: (running) => set((state) => (state.isJoystickRunning === running ? state : { isJoystickRunning: running })),
   
   setCameraDelta: (vec) => set((state) => {
     if (!vec || !Number.isFinite(vec.x) || !Number.isFinite(vec.y)) return state;

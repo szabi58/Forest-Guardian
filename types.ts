@@ -117,6 +117,9 @@ export interface GameState {
   environmentObjects: EnvironmentObjectData[];
   joystickVector: Vector2;
   isJoystickActive: boolean;
+  // True while the stick is pinned to its rim — applies the same run
+  // multiplier as holding Shift on desktop
+  isJoystickRunning: boolean;
   cameraDelta: Vector2;
   cameraJoystickVector: Vector2;
   isCameraJoystickActive: boolean;
@@ -169,6 +172,7 @@ export interface GameState {
   togglePause: () => void;
   setJoystickVector: (vec: Vector2) => void;
   setJoystickActive: (active: boolean) => void;
+  setJoystickRunning: (running: boolean) => void;
   setCameraDelta: (vec: Vector2) => void;
   
   setKamehamehaCharging: (charging: boolean) => void;
