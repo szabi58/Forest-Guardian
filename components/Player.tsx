@@ -1941,8 +1941,12 @@ export const Player: React.FC<{ setPlayerRef: (ref: THREE.Object3D) => void }> =
             vx = fDir.x * dSpeed;
             vz = fDir.z * dSpeed;
         } else if (mv.lengthSq() > 0.001 && !isSpinning && !isAttacking) {
+            // Keyboard input sums to length >= 1 (full speed); the joystick's
+            // analog magnitude (0..1) scales speed for partial pushes and
+            // reads exactly 1.0 at the rim, so mobile matches desktop speed.
+            const inputMagnitude = Math.min(mv.length(), 1);
             mv.normalize();
-            let ts = MOVEMENT_SPEED * (isStanceActive ? STANCE_SPEED_MULT : 1.0);
+            let ts = MOVEMENT_SPEED * inputMagnitude * (isStanceActive ? STANCE_SPEED_MULT : 1.0);
             if (run) ts *= 1.5;
             vx = mv.x * ts; vz = mv.z * ts;
             if (!isFirstPerson) {

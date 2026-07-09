@@ -2,14 +2,15 @@
 import React, { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useGameStore } from '../store';
+import { useGameStore, IS_MOBILE } from '../store';
 import { getTerrainHeight } from './Environment';
 
-const GOD_RAY_COUNT = 15;
-const DUST_COUNT = 300;
-const LEAF_COUNT = 100;
-const FIREFLY_COUNT = 50;
-const SMOKE_PARTICLE_COUNT = 120;
+// Halved on phones — ambient dressing, not gameplay
+const GOD_RAY_COUNT = IS_MOBILE ? 8 : 15;
+const DUST_COUNT = IS_MOBILE ? 120 : 300;
+const LEAF_COUNT = IS_MOBILE ? 50 : 100;
+const FIREFLY_COUNT = IS_MOBILE ? 25 : 50;
+const SMOKE_PARTICLE_COUNT = IS_MOBILE ? 60 : 120;
 
 export const Atmosphere: React.FC = () => {
   const raysRef = useRef<THREE.Group>(null);

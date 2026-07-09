@@ -27,6 +27,14 @@ export const cameraZoom = { target: 8.5 };
 // apply rotation in the same frame.
 export const cameraControl = { dragging: false };
 
+// Phone/tablet detection, used to scale down rendering cost (DPR, particle
+// counts, grass density, shadow resolution). iPadOS reports itself as "Mac"
+// but exposes multi-touch, hence the second clause.
+export const IS_MOBILE = typeof navigator !== 'undefined' && (
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+    (navigator.maxTouchPoints > 2 && /Mac/i.test(navigator.userAgent))
+);
+
 export const getEnemyLivePos = (id: string, fallback: [number, number, number]): [number, number, number] =>
     liveEnemyPositions[id] ?? fallback;
 

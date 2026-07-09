@@ -3,7 +3,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Forest Guardian</title>
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
@@ -15,11 +15,17 @@
         padding: 0;
         overflow: hidden;
         background-color: #1a1a1a;
+        /* No browser pan/pinch-zoom anywhere — the game owns all gestures */
+        touch-action: none;
+        overscroll-behavior: none;
       }
       /* Disable selection for game feel */
       canvas {
         outline: none;
         user-select: none;
+        -webkit-user-select: none;
+        touch-action: none;
+        -webkit-touch-callout: none;
       }
 
       /* Pixel-art Dialogue Bubble Styles */

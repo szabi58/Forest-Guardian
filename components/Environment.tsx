@@ -3,7 +3,7 @@ import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
 import { RigidBody, RapierRigidBody, CuboidCollider, MeshCollider } from '@react-three/rapier';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useGameStore, livePlayerPosition } from '../store';
+import { useGameStore, livePlayerPosition, IS_MOBILE } from '../store';
 import { EnvironmentObjectData } from '../types';
 
 export const getTerrainHeight = (x: number, z: number) => {
@@ -335,7 +335,8 @@ const Rock: React.FC<{ data: EnvironmentObjectData }> = ({ data }) => {
 };
 
 const Grass: React.FC = () => {
-  const count = 26000;
+  // Phones choke on 26k animated blades; a third still reads as dense grass
+  const count = IS_MOBILE ? 9000 : 26000;
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const dummy = useMemo(() => new THREE.Object3D(), []);
   const MASK_SIZE = 80; const CANVAS_RESOLUTION = 1024;
@@ -552,7 +553,7 @@ const Bushes: React.FC = () => {
 
 // Small flower heads: peeking through the tall grass outside, tidy dots on the town lawn
 const Flowers: React.FC = () => {
-  const count = 700;
+  const count = IS_MOBILE ? 300 : 700;
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const petals = useMemo(() => ['#ffffff', '#ffd54f', '#f48fb1', '#b39ddb', '#ff8a65'].map(c => new THREE.Color(c)), []);
 
@@ -703,7 +704,7 @@ export const Environment: React.FC = () => {
       <Flowers />
       <FallingLeaves />
       <ambientLight intensity={0.4} />
-      <directionalLight position={[60, 100, 60]} intensity={1.5} castShadow shadow-mapSize={[2048, 2048]} />
+      <directionalLight position={[60, 100, 60]} intensity={1.5} castShadow shadow-mapSize={IS_MOBILE ? [1024, 1024] : [2048, 2048]} />
       {envObjs.map(obj => (obj.type === 'TREE' ? <Tree key={obj.id} data={obj} /> : <Rock key={obj.id} data={obj} />))}
     </group>
   );

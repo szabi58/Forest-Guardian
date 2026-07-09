@@ -14,7 +14,7 @@ import { CameraController } from './CameraController';
 import { UI } from './UI';
 import { AudioSystem } from './AudioSystem';
 import { GamepadHandler } from './GamepadHandler';
-import { useGameStore, cameraZoom, cameraControl, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX } from '../store';
+import { useGameStore, cameraZoom, cameraControl, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX, IS_MOBILE } from '../store';
 import * as THREE from 'three';
 
 const keyboardMap = [
@@ -108,17 +108,34 @@ const LookController: React.FC = () => {
             );
         };
 
+        // Belt-and-braces with the CSS touch-action:none — stop the browser
+        // from turning two fingers on the canvas into page pinch-zoom/scroll,
+        // so the pointer events above keep flowing to the in-game camera.
+        const preventTouch = (e: TouchEvent) => {
+            if (e.touches.length > 1 || !(e.target as HTMLElement).closest('.pointer-events-auto')) {
+                e.preventDefault();
+            }
+        };
+        // iOS Safari fires proprietary gesture events for pinch; cancel them too
+        const preventGesture = (e: Event) => e.preventDefault();
+
         gl.domElement.addEventListener('pointerdown', handleDown);
         window.addEventListener('pointermove', handleMove);
         window.addEventListener('pointerup', handleUp);
         window.addEventListener('pointercancel', handleUp);
         gl.domElement.addEventListener('wheel', handleWheel, { passive: false });
+        window.addEventListener('touchmove', preventTouch, { passive: false });
+        document.addEventListener('gesturestart', preventGesture);
+        document.addEventListener('gesturechange', preventGesture);
         return () => {
             gl.domElement.removeEventListener('pointerdown', handleDown);
             window.removeEventListener('pointermove', handleMove);
             window.removeEventListener('pointerup', handleUp);
             window.removeEventListener('pointercancel', handleUp);
             gl.domElement.removeEventListener('wheel', handleWheel);
+            window.removeEventListener('touchmove', preventTouch);
+            document.removeEventListener('gesturestart', preventGesture);
+            document.removeEventListener('gesturechange', preventGesture);
         };
     }, [gl, setCameraDelta, setActiveDialoguePartner, isPaused]);
 
@@ -159,16 +176,16 @@ export const Game: React.FC = () => {
       <UI />
       <KeyboardControls map={keyboardMap}>
         <div className="w-full h-full">
-            <Canvas 
-                shadows 
-                camera={{ position: [0, 5, 10], fov: 60 }} 
-                gl={{ antialias: true, stencil: true, alpha: false }}
-                dpr={[1, 2]}
+            <Canvas
+                shadows
+                camera={{ position: [0, 5, 10], fov: 60 }}
+                gl={{ antialias: !IS_MOBILE, stencil: true, alpha: false, powerPreference: 'high-performance' }}
+                dpr={IS_MOBILE ? [0.75, 1.25] : [1, 2]}
             >
             <color attach="background" args={[gameTime > 0.7 ? '#020205' : '#1e3b1e']} />
             <fogExp2 attach="fog" args={[gameTime > 0.7 ? '#05050f' : '#142d14', 0.012]} />
             <Sky sunPosition={sunPos} turbidity={0.05} rayleigh={gameTime > 0.7 ? 0.05 : 0.5} />
-            <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
+            <Stars radius={100} depth={50} count={IS_MOBILE ? 1500 : 5000} factor={4} saturation={0} fade speed={1} />
             <Suspense fallback={null}>
                 <Physics gravity={[0, -22, 0]} paused={isPaused}>
                     <Environment />
@@ -184,7 +201,7 @@ export const Game: React.FC = () => {
                 <LookController />
                 <GamepadHandler />
 
-                <EffectComposer disableNormalPass>
+                <EffectComposer multisampling={IS_MOBILE ? 0 : 8}>
                     <Bloom intensity={0.8} luminanceThreshold={0.8} luminanceSmoothing={0.9} />
                     <Vignette offset={0.3} darkness={0.6} />
                     <ToneMapping />

@@ -26,7 +26,7 @@ const BossBar: React.FC = () => {
   if (!boss || !isNear) return null;
 
   return (
-    <div className="absolute top-6 left-1/2 -translate-x-1/2 w-[520px] max-w-[80vw] z-30 pointer-events-none">
+    <div className="absolute top-16 left-1/2 -translate-x-1/2 w-[520px] max-w-[70vw] z-30 pointer-events-none">
       <div className="text-center text-red-300 text-xs font-black uppercase tracking-[0.5em] mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.9)]">{BOSS_NAME}</div>
       <div className="w-full bg-black/60 h-4 border border-red-900/80 relative overflow-hidden backdrop-blur-md">
         <div
@@ -64,7 +64,7 @@ export const UI: React.FC = () => {
   }
 
   return (
-    <div className="absolute inset-0 pointer-events-none z-10 flex flex-col justify-between p-6 overflow-hidden font-sans">
+    <div className="absolute inset-0 pointer-events-none z-10 flex flex-col justify-between p-3 sm:p-6 overflow-hidden font-sans" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}>
       <BossBar />
       {/* Pause Menu */}
       {isPaused && (
@@ -81,7 +81,7 @@ export const UI: React.FC = () => {
 
       <div className="flex justify-between items-start relative z-20">
         <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2 w-72">
+            <div className="flex flex-col gap-2 w-44 sm:w-72">
                 {/* Health Bar */}
                 <div className="group w-full bg-black/40 h-8 rounded-sm border border-white/10 relative overflow-hidden backdrop-blur-md">
                     <div className="h-full bg-gradient-to-r from-red-900 via-red-600 to-red-400 transition-all duration-500 ease-out" style={{ width: `${(health / maxHealth) * 100}%` }} />
@@ -103,7 +103,7 @@ export const UI: React.FC = () => {
         <div className="flex flex-col items-end gap-3">
           <div className="flex flex-col items-end">
               <span className="text-white/40 text-[10px] font-bold uppercase tracking-[0.3em]">Guardian Score</span>
-              <span className="text-white font-black text-5xl italic drop-shadow-[0_4px_4px_rgba(0,0,0,0.5)]">{score}</span>
+              <span className="text-white font-black text-3xl sm:text-5xl italic drop-shadow-[0_4px_4px_rgba(0,0,0,0.5)]">{score}</span>
           </div>
           
           <button onPointerDown={(e) => { e.stopPropagation(); setShowSettings(!showSettings); }} className="w-12 h-12 bg-white/5 hover:bg-white/20 border border-white/10 rounded-none flex items-center justify-center text-white text-xl pointer-events-auto backdrop-blur-md transition-all active:scale-95">
@@ -126,15 +126,15 @@ export const UI: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex justify-between items-end pb-8 relative z-20">
+      <div className="flex justify-between items-end pb-2 sm:pb-8 relative z-20">
         <div className="mb-4 ml-4"><Joystick /></div>
         
-        <div className="mr-8 mb-4 flex gap-6 items-end">
+        <div className="mr-2 sm:mr-8 mb-4 flex gap-3 sm:gap-6 items-end">
             <div className="flex flex-col gap-4">
-                <button onPointerDown={(e) => { e.stopPropagation(); toggleStance(); }} className={`w-16 h-16 ${isStanceActive ? 'bg-indigo-600 shadow-[0_0_20px_rgba(79,70,229,0.5)]' : 'bg-white/5'} border border-white/20 rounded-none flex items-center justify-center text-white text-2xl active:scale-90 transition-all pointer-events-auto backdrop-blur-md`}>
+                <button onPointerDown={(e) => { e.stopPropagation(); toggleStance(); }} className={`w-14 h-14 sm:w-16 sm:h-16 ${isStanceActive ? 'bg-indigo-600 shadow-[0_0_20px_rgba(79,70,229,0.5)]' : 'bg-white/5'} border border-white/20 rounded-none flex items-center justify-center text-white text-2xl active:scale-90 transition-all pointer-events-auto backdrop-blur-md`}>
                    {isStanceActive ? '🛡️' : '🔘'}
                 </button>
-                <button onPointerDown={(e) => { e.stopPropagation(); requestJump(); }} className="w-16 h-16 bg-white/5 border border-white/20 rounded-none flex items-center justify-center text-white text-2xl active:scale-90 transition-all pointer-events-auto backdrop-blur-md">
+                <button onPointerDown={(e) => { e.stopPropagation(); requestJump(); }} className="w-14 h-14 sm:w-16 sm:h-16 bg-white/5 border border-white/20 rounded-none flex items-center justify-center text-white text-2xl active:scale-90 transition-all pointer-events-auto backdrop-blur-md">
                    ☁️
                 </button>
             </div>
@@ -153,7 +153,7 @@ export const UI: React.FC = () => {
                                 setMeleeCharging(false); 
                             } 
                         }}
-                        className={`w-24 h-24 relative overflow-hidden bg-white hover:bg-red-500 border-2 border-white/20 rounded-none flex items-center justify-center text-black hover:text-white transition-all active:scale-90`}
+                        className={`w-20 h-20 sm:w-24 sm:h-24 relative overflow-hidden bg-white hover:bg-red-500 border-2 border-white/20 rounded-none flex items-center justify-center text-black hover:text-white transition-all active:scale-90`}
                     >
                         <span className="text-3xl z-10 font-black italic">SLAY</span>
                         {isMeleeCharging && (
@@ -165,7 +165,7 @@ export const UI: React.FC = () => {
                 <button 
                   onPointerDown={(e) => { e.stopPropagation(); setKamehamehaCharging(true); }} 
                   onPointerUp={(e) => { e.stopPropagation(); if (isKamehamehaCharging) { fireKamehameha(); setKamehamehaCharging(false); } }} 
-                  className={`w-20 h-20 bg-black/40 hover:bg-cyan-600/40 border border-white/20 rounded-none flex flex-col items-center justify-center text-white transition-all active:scale-90 pointer-events-auto backdrop-blur-md overflow-hidden relative`}
+                  className={`w-16 h-16 sm:w-20 sm:h-20 bg-black/40 hover:bg-cyan-600/40 border border-white/20 rounded-none flex flex-col items-center justify-center text-white transition-all active:scale-90 pointer-events-auto backdrop-blur-md overflow-hidden relative`}
                 >
                     <span className="text-xs font-black tracking-widest uppercase mb-1 z-10">KAME</span>
                     <span className="text-xl z-10">☄️</span>
